@@ -304,6 +304,123 @@ button#refresh-btn:disabled {
 }
 
 /* ---------------------------------------------------------------------- */
+/* History panel                                                          */
+/* ---------------------------------------------------------------------- */
+
+.panel--history {
+  padding: 16px 18px 18px;
+}
+
+.history-error {
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  background: var(--color-offline-bg);
+  color: var(--color-offline);
+  border: 1px solid color-mix(in srgb, var(--color-offline) 35%, transparent);
+}
+
+.history-empty {
+  padding: 18px 4px;
+  font-size: 0.9rem;
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+.history-table-wrap {
+  overflow-x: auto;
+}
+
+.history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.history-table th {
+  text-align: left;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+  padding: 0 10px 8px;
+  white-space: nowrap;
+}
+
+.history-table td {
+  padding: 8px 10px;
+  border-top: 1px solid var(--color-border);
+  vertical-align: top;
+  word-break: break-word;
+}
+
+.history-table tbody tr:hover {
+  background: color-mix(in srgb, var(--color-accent) 6%, transparent);
+}
+
+.history-table__time {
+  white-space: nowrap;
+}
+
+.history-time-abs {
+  display: block;
+  font-weight: 500;
+}
+
+.history-time-rel {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+
+.history-table__ip {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.reason-badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  white-space: nowrap;
+  background: var(--color-checking-bg);
+  color: var(--color-checking);
+}
+
+.reason-badge--initial {
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+}
+
+.reason-badge--ip_changed {
+  background: var(--color-checking-bg);
+  color: var(--color-checking);
+}
+
+.reason-badge--isp_changed {
+  background: var(--color-checking-bg);
+  color: var(--color-checking);
+}
+
+.reason-badge--offline {
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+}
+
+/* The VPN-drop signal: an IP change within the same country is routine on
+   reconnect, but a country change means traffic may have left the tunnel.
+   This is the one row style in the table that should read as "alarming". */
+.reason-badge--country_changed {
+  background: var(--color-offline-bg);
+  color: var(--color-offline);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-offline) 45%, transparent);
+}
+
+/* ---------------------------------------------------------------------- */
 /* Dark mode                                                              */
 /* ---------------------------------------------------------------------- */
 

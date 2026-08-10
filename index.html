@@ -86,6 +86,28 @@
           <div id="map"></div>
         </div>
       </section>
+
+      <section class="panel panel--history">
+        <div class="panel__header">
+          <h2 class="panel__title">History</h2>
+        </div>
+        <div id="history-error" class="history-error" hidden></div>
+        <div id="history-empty" class="history-empty" hidden>No history yet.</div>
+        <div id="history-table-wrap" class="history-table-wrap" hidden>
+          <table class="history-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>IP</th>
+                <th>Country</th>
+                <th>ISP</th>
+                <th>Reason</th>
+              </tr>
+            </thead>
+            <tbody id="history-body"></tbody>
+          </table>
+        </div>
+      </section>
     </main>
   </body>
 </html>

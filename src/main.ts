@@ -57,6 +57,17 @@ interface Change {
   reason: ChangeReason;
 }
 
+interface IpEvent {
+  id: number | null;
+  /** Unix seconds, not milliseconds. */
+  ts: number;
+  external_ip: string;
+  country: string | null;
+  country_code: string | null;
+  isp: string | null;
+  change_reason: ChangeReason;
+}
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -70,6 +81,19 @@ let hasLoadedOnce = false;
 let refreshWatchdog: ReturnType<typeof setTimeout> | null = null;
 
 const PLACEHOLDER = "—";
+
+/** How many rows to pull from `get_history`. This is a details window, not
+ * a paged log — 50 is enough to see the recent pattern without the panel
+ * growing unbounded. */
+const HISTORY_LIMIT = 50;
+
+const REASON_LABELS: Record<ChangeReason, string> = {
+  initial: "Initial",
+  ip_changed: "IP changed",
+  country_changed: "Country changed",
+  isp_changed: "ISP changed",
+  offline: "Offline",
+};
 
 // ---------------------------------------------------------------------------
 // Map pane state
@@ -130,6 +154,11 @@ let mapPaneEl: HTMLElement;
 let mapUnavailableEl: HTMLElement;
 let mapContainer: HTMLElement;
 
+let historyErrorEl: HTMLElement;
+let historyEmptyEl: HTMLElement;
+let historyTableWrap: HTMLElement;
+let historyBody: HTMLElement;
+
 function queryEl<T extends HTMLElement>(selector: string): T {
   const el = document.querySelector<T>(selector);
   if (!el) {
@@ -164,6 +193,11 @@ function bindDom(): void {
   mapPaneEl = queryEl("#map-pane");
   mapUnavailableEl = queryEl("#map-unavailable");
   mapContainer = queryEl("#map");
+
+  historyErrorEl = queryEl("#history-error");
+  historyEmptyEl = queryEl("#history-empty");
+  historyTableWrap = queryEl("#history-table-wrap");
+  historyBody = queryEl("#history-body");
 }
 
 // ---------------------------------------------------------------------------
@@ -199,6 +233,28 @@ function formatObservedAt(observedAtSeconds: number): string {
   return new Date(observedAtSeconds * 1000).toLocaleString();
 }
 
+/** Coarse "Xh ago" hint. This is a supplement to the absolute timestamp,
+ * never a replacement — reviewing the log a day later, "2h ago" on its own
+ * is meaningless. */
+function formatRelativeTime(unixSeconds: number): string {
+  const diffSec = Math.round((Date.now() - unixSeconds * 1000) / 1000);
+  if (diffSec < 5) return "just now";
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const diffMin = Math.round(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDay = Math.round(diffHr / 24);
+  return `${diffDay}d ago`;
+}
+
+function formatEventCountry(ev: IpEvent): string {
+  if (ev.country && ev.country_code) return `${ev.country} (${ev.country_code})`;
+  if (ev.country) return ev.country;
+  if (ev.country_code) return ev.country_code;
+  return PLACEHOLDER;
+}
+
 function setErrorBanner(message: string | null): void {
   if (message) {
     errorBanner.textContent = message;
@@ -206,6 +262,56 @@ function setErrorBanner(message: string | null): void {
   } else {
     errorBanner.hidden = true;
     errorBanner.textContent = "";
+  }
+}
+
+/** Scoped to the history panel so a DB hiccup there (the backend degrades
+ * to "no history" rather than failing startup) never clobbers the
+ * top-level error banner or the rest of the window. */
+function setHistoryError(message: string | null): void {
+  if (message) {
+    historyErrorEl.textContent = message;
+    historyErrorEl.hidden = false;
+  } else {
+    historyErrorEl.hidden = true;
+    historyErrorEl.textContent = "";
+  }
+}
+
+function renderHistoryRows(events: IpEvent[]): void {
+  historyBody.textContent = "";
+
+  for (const ev of events) {
+    const tr = document.createElement("tr");
+
+    const tdTime = document.createElement("td");
+    tdTime.className = "history-table__time";
+    const abs = document.createElement("span");
+    abs.className = "history-time-abs";
+    abs.textContent = formatObservedAt(ev.ts);
+    const rel = document.createElement("span");
+    rel.className = "history-time-rel";
+    rel.textContent = formatRelativeTime(ev.ts);
+    tdTime.append(abs, rel);
+
+    const tdIp = document.createElement("td");
+    tdIp.className = "history-table__ip";
+    tdIp.textContent = text(ev.external_ip);
+
+    const tdCountry = document.createElement("td");
+    tdCountry.textContent = formatEventCountry(ev);
+
+    const tdIsp = document.createElement("td");
+    tdIsp.textContent = text(ev.isp);
+
+    const tdReason = document.createElement("td");
+    const badge = document.createElement("span");
+    badge.className = `reason-badge reason-badge--${ev.change_reason}`;
+    badge.textContent = REASON_LABELS[ev.change_reason] ?? ev.change_reason;
+    tdReason.appendChild(badge);
+
+    tr.append(tdTime, tdIp, tdCountry, tdIsp, tdReason);
+    historyBody.appendChild(tr);
   }
 }
 
@@ -390,6 +496,28 @@ async function loadDetails(): Promise<void> {
   }
 }
 
+/** Loads the history panel. Called on startup and re-called whenever an
+ * `ip-changed` event lands, since that's exactly when a new `ip_events`
+ * row exists to show. Never polled. */
+async function loadHistory(): Promise<void> {
+  try {
+    const events = await invoke<IpEvent[]>("get_history", { limit: HISTORY_LIMIT });
+    setHistoryError(null);
+    if (events.length === 0) {
+      historyEmptyEl.hidden = false;
+      historyTableWrap.hidden = true;
+    } else {
+      historyEmptyEl.hidden = true;
+      historyTableWrap.hidden = false;
+      renderHistoryRows(events);
+    }
+  } catch (err) {
+    setHistoryError(`Could not load history: ${String(err)}`);
+    historyEmptyEl.hidden = true;
+    historyTableWrap.hidden = true;
+  }
+}
+
 function clearRefreshWatchdog(): void {
   if (refreshWatchdog !== null) {
     clearTimeout(refreshWatchdog);
@@ -442,6 +570,9 @@ async function registerListeners(): Promise<void> {
     if (mapPaneOpen) {
       renderMap();
     }
+    // This event is exactly when a new ip_events row exists — re-pull
+    // rather than polling.
+    void loadHistory();
   });
 
   await listen("refresh-started", () => {
@@ -471,5 +602,6 @@ window.addEventListener("DOMContentLoaded", () => {
   void (async () => {
     await registerListeners();
     await loadDetails();
+    await loadHistory();
   })();
 });
