@@ -68,6 +68,28 @@ interface IpEvent {
   change_reason: ChangeReason;
 }
 
+// These mirror `src-tauri/src/dnsleak/{mod,verdict}.rs`. `DnsLeakVerdict` is a
+// serde internally-tagged enum (`#[serde(tag = "kind", rename_all =
+// "snake_case")]`), so the discriminant lives in `kind` and only `Leaking`/
+// `Inconclusive` carry extra fields.
+interface DnsLeakResolver {
+  ip: string;
+  country: string | null;
+  asn: string | null;
+}
+
+type DnsLeakVerdict =
+  | { kind: "no_resolvers" }
+  | { kind: "consistent" }
+  | { kind: "leaking"; foreign: string[] }
+  | { kind: "inconclusive"; reason: string };
+
+interface LeakReport {
+  external_ip: string | null;
+  resolvers: DnsLeakResolver[];
+  verdict: DnsLeakVerdict;
+}
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -79,6 +101,8 @@ let online = false;
 let hasLoadedOnce = false;
 /** Guards `refresh-done` never arriving (e.g. dropped event) from wedging the button forever. */
 let refreshWatchdog: ReturnType<typeof setTimeout> | null = null;
+/** True while a DNS leak test is in flight, so a stray double-click can't fire a second call. */
+let dnsLeakRunning = false;
 
 const PLACEHOLDER = "—";
 
@@ -159,6 +183,16 @@ let historyEmptyEl: HTMLElement;
 let historyTableWrap: HTMLElement;
 let historyBody: HTMLElement;
 
+let dnsLeakRunBtn: HTMLButtonElement;
+let dnsLeakProgressEl: HTMLElement;
+let dnsLeakErrorEl: HTMLElement;
+let dnsLeakResultEl: HTMLElement;
+let dnsLeakVerdictEl: HTMLElement;
+let dnsLeakExternalIpEl: HTMLElement;
+let dnsLeakResolversWrap: HTMLElement;
+let dnsLeakResolversBody: HTMLElement;
+let dnsLeakResolversEmptyEl: HTMLElement;
+
 function queryEl<T extends HTMLElement>(selector: string): T {
   const el = document.querySelector<T>(selector);
   if (!el) {
@@ -198,6 +232,16 @@ function bindDom(): void {
   historyEmptyEl = queryEl("#history-empty");
   historyTableWrap = queryEl("#history-table-wrap");
   historyBody = queryEl("#history-body");
+
+  dnsLeakRunBtn = queryEl("#dnsleak-run-btn");
+  dnsLeakProgressEl = queryEl("#dnsleak-progress");
+  dnsLeakErrorEl = queryEl("#dnsleak-error");
+  dnsLeakResultEl = queryEl("#dnsleak-result");
+  dnsLeakVerdictEl = queryEl("#dnsleak-verdict");
+  dnsLeakExternalIpEl = queryEl("#dnsleak-external-ip");
+  dnsLeakResolversWrap = queryEl("#dnsleak-resolvers-wrap");
+  dnsLeakResolversBody = queryEl("#dnsleak-resolvers-body");
+  dnsLeakResolversEmptyEl = queryEl("#dnsleak-resolvers-empty");
 }
 
 // ---------------------------------------------------------------------------
@@ -474,6 +518,163 @@ function onMapToggleClick(): void {
 }
 
 // ---------------------------------------------------------------------------
+// DNS leak panel
+//
+// Strictly on-demand: nothing here runs on load or on `ip-changed`. The test
+// makes real DNS queries and an HTTP call to a third-party leak-test
+// service, so it only ever fires from the "Run test" click handler below —
+// running it silently in the background is exactly the kind of unprompted
+// phoning-home this app exists to help users spot in *other* software.
+// ---------------------------------------------------------------------------
+
+/** Scoped to this panel, like `setHistoryError`. `benign` renders the
+ * "a test is already running" rejection as a mild heads-up rather than an
+ * alarming failure — it isn't one. */
+function setDnsLeakError(message: string | null, benign = false): void {
+  if (message) {
+    dnsLeakErrorEl.textContent = message;
+    dnsLeakErrorEl.hidden = false;
+    dnsLeakErrorEl.classList.toggle("dnsleak-error--benign", benign);
+  } else {
+    dnsLeakErrorEl.hidden = true;
+    dnsLeakErrorEl.textContent = "";
+    dnsLeakErrorEl.classList.remove("dnsleak-error--benign");
+  }
+}
+
+const DNSLEAK_VERDICT_CLASSES = [
+  "dnsleak-verdict--leaking",
+  "dnsleak-verdict--consistent",
+  "dnsleak-verdict--inconclusive",
+  "dnsleak-verdict--no-resolvers",
+] as const;
+
+/**
+ * Renders the verdict banner. `inconclusive` and `no_resolvers` deliberately
+ * share the same amber "couldn't verify" visual language as the app's
+ * existing "checking" state — never green, never anything that could be
+ * skimmed as a pass — while `consistent` is careful to say "no leak
+ * detected" rather than any stronger safety claim. This is the one piece of
+ * this panel that most needs to be visually unambiguous: a user who reads
+ * "inconclusive" as "fine" is the exact failure this feature exists to
+ * prevent.
+ */
+function renderDnsLeakVerdict(verdict: DnsLeakVerdict): void {
+  dnsLeakVerdictEl.classList.remove(...DNSLEAK_VERDICT_CLASSES);
+
+  const heading = document.createElement("div");
+  heading.className = "dnsleak-verdict__heading";
+  const detail = document.createElement("div");
+  detail.className = "dnsleak-verdict__detail";
+
+  switch (verdict.kind) {
+    case "leaking":
+      dnsLeakVerdictEl.classList.add("dnsleak-verdict--leaking");
+      heading.textContent = "DNS leak detected";
+      detail.textContent =
+        `${verdict.foreign.length} resolver${verdict.foreign.length === 1 ? "" : "s"} outside ` +
+        "your VPN's network answered your DNS queries — your ISP or another network can see the " +
+        "domains you visit, even though the tunnel itself is up.";
+      break;
+    case "consistent":
+      dnsLeakVerdictEl.classList.add("dnsleak-verdict--consistent");
+      heading.textContent = "No leak detected";
+      detail.textContent =
+        "Every resolver seen in this test matched your VPN's exit network. This confirms the " +
+        "resolvers used for this specific test line up with your tunnel — it isn't a guarantee " +
+        "against every possible leak.";
+      break;
+    case "inconclusive":
+      dnsLeakVerdictEl.classList.add("dnsleak-verdict--inconclusive");
+      heading.textContent = "Inconclusive — not a pass";
+      detail.textContent = `Could not compare resolvers to your VPN's exit network: ${verdict.reason}. This is not a clean bill of health — it means the test could not tell either way.`;
+      break;
+    case "no_resolvers":
+      dnsLeakVerdictEl.classList.add("dnsleak-verdict--inconclusive");
+      heading.textContent = "Inconclusive — not a pass";
+      detail.textContent =
+        "The leak-test service reported no resolvers at all for this run, so nothing could be " +
+        "verified. This is not a clean bill of health — try running the test again.";
+      break;
+  }
+
+  dnsLeakVerdictEl.replaceChildren(heading, detail);
+}
+
+function renderDnsLeakResolvers(report: LeakReport): void {
+  dnsLeakResolversBody.textContent = "";
+
+  if (report.resolvers.length === 0) {
+    dnsLeakResolversWrap.hidden = true;
+    dnsLeakResolversEmptyEl.hidden = false;
+    return;
+  }
+
+  dnsLeakResolversWrap.hidden = false;
+  dnsLeakResolversEmptyEl.hidden = true;
+
+  const foreign = new Set(report.verdict.kind === "leaking" ? report.verdict.foreign : []);
+
+  for (const resolver of report.resolvers) {
+    const tr = document.createElement("tr");
+    if (foreign.has(resolver.ip)) {
+      tr.className = "dnsleak-table__row--foreign";
+    }
+
+    const tdIp = document.createElement("td");
+    tdIp.className = "dnsleak-table__ip";
+    tdIp.textContent = text(resolver.ip);
+
+    const tdCountry = document.createElement("td");
+    tdCountry.textContent = text(resolver.country);
+
+    const tdAsn = document.createElement("td");
+    tdAsn.textContent = text(resolver.asn);
+
+    tr.append(tdIp, tdCountry, tdAsn);
+    dnsLeakResolversBody.appendChild(tr);
+  }
+}
+
+function renderDnsLeakReport(report: LeakReport): void {
+  dnsLeakResultEl.hidden = false;
+  renderDnsLeakVerdict(report.verdict);
+  dnsLeakExternalIpEl.textContent = text(report.external_ip);
+  renderDnsLeakResolvers(report);
+}
+
+function setDnsLeakRunning(running: boolean): void {
+  dnsLeakRunning = running;
+  dnsLeakRunBtn.disabled = running;
+  dnsLeakRunBtn.textContent = running ? "Running…" : "Run test";
+  dnsLeakProgressEl.hidden = !running;
+}
+
+async function onDnsLeakRunClick(): Promise<void> {
+  if (dnsLeakRunning) {
+    return;
+  }
+
+  setDnsLeakRunning(true);
+  setDnsLeakError(null);
+  dnsLeakResultEl.hidden = true;
+
+  try {
+    const report = await invoke<LeakReport>("run_dns_leak_test");
+    renderDnsLeakReport(report);
+  } catch (err) {
+    const message = String(err);
+    const alreadyRunning = message.toLowerCase().includes("already running");
+    setDnsLeakError(
+      alreadyRunning ? "A DNS leak test is already running — hang on for it to finish." : `DNS leak test failed: ${message}`,
+      alreadyRunning,
+    );
+  } finally {
+    setDnsLeakRunning(false);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Backend calls
 // ---------------------------------------------------------------------------
 
@@ -598,6 +799,7 @@ window.addEventListener("DOMContentLoaded", () => {
   render();
   refreshBtn.addEventListener("click", () => void onRefreshClick());
   mapToggleBtn.addEventListener("click", onMapToggleClick);
+  dnsLeakRunBtn.addEventListener("click", () => void onDnsLeakRunClick());
 
   void (async () => {
     await registerListeners();

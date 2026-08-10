@@ -421,6 +421,189 @@ button#refresh-btn:disabled {
 }
 
 /* ---------------------------------------------------------------------- */
+/* DNS leak panel                                                         */
+/* ---------------------------------------------------------------------- */
+
+.panel--dnsleak {
+  padding: 16px 18px 18px;
+}
+
+.dnsleak-run-btn {
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  padding: 0.4em 0.9em;
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--color-text);
+  background-color: var(--color-surface);
+  cursor: pointer;
+  transition: border-color 0.15s, opacity 0.15s;
+  flex: none;
+}
+
+.dnsleak-run-btn:hover:not(:disabled) {
+  border-color: var(--color-accent);
+}
+
+.dnsleak-run-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.dnsleak-explainer {
+  margin: 0 0 12px;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.dnsleak-progress {
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  background: var(--color-checking-bg);
+  color: var(--color-checking);
+}
+
+.dnsleak-error {
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  background: var(--color-offline-bg);
+  color: var(--color-offline);
+  border: 1px solid color-mix(in srgb, var(--color-offline) 35%, transparent);
+}
+
+/* The "a test is already running" rejection isn't a failure — it reads as a
+   mild heads-up in the same amber "checking" language used elsewhere,
+   rather than the alarming red used for actual errors. */
+.dnsleak-error--benign {
+  background: var(--color-checking-bg);
+  color: var(--color-checking);
+  border-color: color-mix(in srgb, var(--color-checking) 35%, transparent);
+}
+
+.dnsleak-result {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.dnsleak-verdict {
+  border-radius: 10px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  /* Neutral fallback; every real render path adds a --leaking/--consistent/
+     --inconclusive modifier that overrides this. */
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+}
+
+.dnsleak-verdict__heading {
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.dnsleak-verdict__detail {
+  font-size: 0.85rem;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+/* Alarming — mirrors the app's existing offline/leak-risk visual language. */
+.dnsleak-verdict--leaking {
+  background: var(--color-offline-bg);
+  color: var(--color-offline);
+  border: 1px solid color-mix(in srgb, var(--color-offline) 45%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-offline) 25%, transparent);
+}
+
+/* Reassuring, but deliberately the app's "online" language rather than
+   anything stronger — the copy in renderDnsLeakVerdict() is worded as
+   "no leak detected", never "you are safe". */
+.dnsleak-verdict--consistent {
+  background: var(--color-online-bg);
+  color: var(--color-online);
+  border: 1px solid color-mix(in srgb, var(--color-online) 35%, transparent);
+}
+
+/* Inconclusive / no-resolvers: intentionally the same amber "checking"
+   language as everywhere else uncertainty is shown in this app, and
+   intentionally NOT green — this must never be mistaken for a pass. */
+.dnsleak-verdict--inconclusive {
+  background: var(--color-checking-bg);
+  color: var(--color-checking);
+  border: 1px solid color-mix(in srgb, var(--color-checking) 45%, transparent);
+}
+
+.dnsleak-fieldgrid {
+  margin: 0;
+}
+
+.dnsleak-resolvers-title {
+  margin: 0 0 8px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted);
+}
+
+.dnsleak-resolvers-empty {
+  padding: 10px 4px;
+  font-size: 0.88rem;
+  color: var(--color-text-muted);
+}
+
+.dnsleak-table-wrap {
+  overflow-x: auto;
+}
+
+.dnsleak-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.dnsleak-table th {
+  text-align: left;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+  padding: 0 10px 8px;
+  white-space: nowrap;
+}
+
+.dnsleak-table td {
+  padding: 8px 10px;
+  border-top: 1px solid var(--color-border);
+  vertical-align: top;
+  word-break: break-word;
+}
+
+.dnsleak-table__ip {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+/* Highlights the specific resolver(s) that triggered a Leaking verdict. */
+.dnsleak-table__row--foreign {
+  background: color-mix(in srgb, var(--color-offline) 10%, transparent);
+}
+
+.dnsleak-table__row--foreign td:first-child {
+  box-shadow: inset 3px 0 0 var(--color-offline);
+}
+
+/* ---------------------------------------------------------------------- */
 /* Dark mode                                                              */
 /* ---------------------------------------------------------------------- */
 

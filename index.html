@@ -87,6 +87,57 @@
         </div>
       </section>
 
+      <section class="panel panel--dnsleak">
+        <div class="panel__header">
+          <h2 class="panel__title">DNS Leak Check</h2>
+          <button id="dnsleak-run-btn" type="button" class="dnsleak-run-btn">
+            Run test
+          </button>
+        </div>
+        <p class="dnsleak-explainer">
+          A VPN can carry your traffic correctly while your DNS lookups still go out through your
+          ISP's resolvers instead of the tunnel — that leaks every domain you visit even though the
+          connection looks fine. This on-demand test checks which resolvers your DNS queries actually
+          reach and compares them against your VPN's exit network. It makes a few real requests to a
+          third-party leak-test service and takes several seconds, so it only runs when you click.
+        </p>
+
+        <div id="dnsleak-progress" class="dnsleak-progress" hidden>
+          Running test — resolving probe names, then checking who answered them. This can take up to
+          15 seconds…
+        </div>
+
+        <div id="dnsleak-error" class="dnsleak-error" hidden></div>
+
+        <div id="dnsleak-result" class="dnsleak-result" hidden>
+          <div id="dnsleak-verdict" class="dnsleak-verdict"></div>
+
+          <dl class="fieldgrid dnsleak-fieldgrid">
+            <dt>External IP seen by test</dt>
+            <dd id="dnsleak-external-ip">—</dd>
+          </dl>
+
+          <div id="dnsleak-resolvers-wrap" class="dnsleak-resolvers-wrap">
+            <h3 class="dnsleak-resolvers-title">Resolvers detected</h3>
+            <div class="dnsleak-table-wrap">
+              <table class="dnsleak-table">
+                <thead>
+                  <tr>
+                    <th>IP</th>
+                    <th>Country</th>
+                    <th>ASN</th>
+                  </tr>
+                </thead>
+                <tbody id="dnsleak-resolvers-body"></tbody>
+              </table>
+            </div>
+          </div>
+          <div id="dnsleak-resolvers-empty" class="dnsleak-resolvers-empty" hidden>
+            No resolvers were detected for this test.
+          </div>
+        </div>
+      </section>
+
       <section class="panel panel--history">
         <div class="panel__header">
           <h2 class="panel__title">History</h2>
