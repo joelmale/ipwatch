@@ -17,6 +17,8 @@ use crate::netinfo::{self, NetInfo};
 use crate::poller::{Change, Poller, Snapshot};
 use crate::providers::{default_geo_chain, default_ip_chain, http_client};
 
+pub mod tray;
+
 /// `rusqlite::Connection` (inside `Db`) is `Send` but not `Sync`, so a bare
 /// `Db` cannot go into Tauri managed state — state must be `Send + Sync`.
 /// `Option` wraps it so a database that fails to open at startup degrades to
@@ -58,6 +60,8 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     // The poller's own refresh loop; entirely inside poller/mod.rs, which
     // stays Tauri-free by design.
     let _poll_loop = poller.clone().spawn();
+
+    tray::init(app, poller.clone())?;
 
     spawn_event_bridge(handle, poller, shared_db);
 
