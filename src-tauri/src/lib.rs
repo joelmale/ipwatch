@@ -10,19 +10,12 @@ pub mod netinfo;
 pub mod poller;
 pub mod providers;
 
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(app::setup)
         .invoke_handler(tauri::generate_handler![
-            greet,
             app::get_details,
             app::refresh,
             app::get_history
