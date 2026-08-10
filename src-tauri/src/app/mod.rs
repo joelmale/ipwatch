@@ -17,6 +17,7 @@ use crate::netinfo::{self, NetInfo};
 use crate::poller::{Change, Poller, Snapshot};
 use crate::providers::{default_geo_chain, default_ip_chain, http_client};
 
+pub mod tiles;
 pub mod tray;
 
 /// `rusqlite::Connection` (inside `Db`) is `Send` but not `Sync`, so a bare

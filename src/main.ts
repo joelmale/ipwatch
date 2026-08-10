@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 
 // ---------------------------------------------------------------------------
 // Backend payload shapes. These mirror the Rust structs in
@@ -70,6 +72,35 @@ let refreshWatchdog: ReturnType<typeof setTimeout> | null = null;
 const PLACEHOLDER = "—";
 
 // ---------------------------------------------------------------------------
+// Map pane state
+//
+// The map is lazy in the strongest sense that matters here: the Leaflet
+// instance is not constructed, and no tile URL is ever built, until the user
+// opens the pane at least once. Tiles are proxied through Rust (see
+// src-tauri/src/app/tiles.rs) precisely so the webview never talks to a
+// third party directly — this is a VPN-verification tool, so leaking the
+// user's current exit-node coordinates to an OSM tile server on every
+// background poll would defeat the point. Keeping map creation gated behind
+// `mapPaneOpen` is what makes that guarantee hold for background IP changes.
+// ---------------------------------------------------------------------------
+
+/** Windows/Android serve custom schemes at `http://<scheme>.localhost/…`;
+ * macOS/Linux/iOS serve them at `<scheme>://localhost/…`. Only the Windows
+ * form is exercised in this app's CSP (see tauri.conf.json's `img-src`) —
+ * Windows is the primary target — but branching here is cheap and keeps the
+ * non-Windows path from being silently broken in an obviously wrong way. */
+const TILE_URL_TEMPLATE = navigator.userAgent.includes("Windows")
+  ? "http://tiles.localhost/{z}/{x}/{y}.png"
+  : "tiles://localhost/{z}/{x}/{y}.png";
+
+const MAP_ATTRIBUTION =
+  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+
+let leafletMap: L.Map | null = null;
+let mapMarker: L.CircleMarker | null = null;
+let mapPaneOpen = false;
+
+// ---------------------------------------------------------------------------
 // DOM handles
 // ---------------------------------------------------------------------------
 
@@ -93,6 +124,11 @@ let fCoords: HTMLElement;
 let fHostname: HTMLElement;
 let fInternalIps: HTMLElement;
 let fDnsServers: HTMLElement;
+
+let mapToggleBtn: HTMLButtonElement;
+let mapPaneEl: HTMLElement;
+let mapUnavailableEl: HTMLElement;
+let mapContainer: HTMLElement;
 
 function queryEl<T extends HTMLElement>(selector: string): T {
   const el = document.querySelector<T>(selector);
@@ -123,6 +159,11 @@ function bindDom(): void {
   fHostname = queryEl("#f-hostname");
   fInternalIps = queryEl("#f-internal-ips");
   fDnsServers = queryEl("#f-dns-servers");
+
+  mapToggleBtn = queryEl("#map-toggle-btn");
+  mapPaneEl = queryEl("#map-pane");
+  mapUnavailableEl = queryEl("#map-unavailable");
+  mapContainer = queryEl("#map");
 }
 
 // ---------------------------------------------------------------------------
@@ -241,6 +282,92 @@ function render(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Map pane
+//
+// `ensureLeafletMap` is the only place a `L.Map` gets constructed, and it is
+// only ever called from `renderMap`, which itself bails out at the top when
+// the pane is closed. That means: with the pane closed, this file never
+// calls `L.map(...)`, never builds a tile URL, and never adds a tile layer —
+// so no tile request can be issued. See the state-block comment above for
+// why that property matters here.
+// ---------------------------------------------------------------------------
+
+function ensureLeafletMap(): L.Map {
+  if (leafletMap) {
+    return leafletMap;
+  }
+
+  const map = L.map(mapContainer).setView([0, 0], 2);
+  L.tileLayer(TILE_URL_TEMPLATE, {
+    maxZoom: 19,
+    attribution: MAP_ATTRIBUTION,
+  }).addTo(map);
+
+  leafletMap = map;
+  return map;
+}
+
+/**
+ * Renders the map pane against `lastSnapshot`. Must only be called while the
+ * pane is open — callers (the toggle handler, the `ip-changed` listener,
+ * `loadDetails`) are responsible for checking `mapPaneOpen` first, but this
+ * also re-checks itself so a stray call can never sneak a tile fetch in
+ * while the pane is closed.
+ */
+function renderMap(): void {
+  if (!mapPaneOpen) {
+    return;
+  }
+
+  const geo = lastSnapshot?.geo;
+  if (!geo || geo.lat === null || geo.lon === null) {
+    mapUnavailableEl.hidden = false;
+    mapContainer.hidden = true;
+    return;
+  }
+
+  mapUnavailableEl.hidden = true;
+  mapContainer.hidden = false;
+
+  const map = ensureLeafletMap();
+  const latLng: L.LatLngExpression = [geo.lat, geo.lon];
+  const zoom = Math.max(map.getZoom(), 10);
+  map.setView(latLng, zoom);
+
+  // The container may have just gone from `hidden` to visible; Leaflet
+  // measured a 0x0 box while it was hidden, so tiles need a recalculation
+  // once the browser has actually laid the pane out.
+  requestAnimationFrame(() => map.invalidateSize());
+
+  if (mapMarker) {
+    mapMarker.setLatLng(latLng);
+  } else {
+    mapMarker = L.circleMarker(latLng, {
+      radius: 8,
+      weight: 2,
+      color: "#2f6fed",
+      fillColor: "#2f6fed",
+      fillOpacity: 0.85,
+    }).addTo(map);
+  }
+}
+
+function setMapPaneOpen(open: boolean): void {
+  mapPaneOpen = open;
+  mapPaneEl.hidden = !open;
+  mapToggleBtn.textContent = open ? "Hide map" : "Show map";
+  mapToggleBtn.setAttribute("aria-expanded", String(open));
+
+  if (open) {
+    renderMap();
+  }
+}
+
+function onMapToggleClick(): void {
+  setMapPaneOpen(!mapPaneOpen);
+}
+
+// ---------------------------------------------------------------------------
 // Backend calls
 // ---------------------------------------------------------------------------
 
@@ -253,6 +380,9 @@ async function loadDetails(): Promise<void> {
     setErrorBanner(null);
     render();
     renderNetInfo(details.netinfo);
+    if (mapPaneOpen) {
+      renderMap();
+    }
   } catch (err) {
     hasLoadedOnce = true;
     setErrorBanner(`Could not load details: ${String(err)}`);
@@ -306,6 +436,12 @@ async function registerListeners(): Promise<void> {
     online = change.reason !== "offline";
     setErrorBanner(null);
     render();
+    // Gated on mapPaneOpen inside renderMap() too, but checked here as well
+    // so a closed pane never even reaches the function on a background
+    // ip-changed event — that's the point in the state-block comment above.
+    if (mapPaneOpen) {
+      renderMap();
+    }
   });
 
   await listen("refresh-started", () => {
@@ -330,6 +466,7 @@ window.addEventListener("DOMContentLoaded", () => {
   bindDom();
   render();
   refreshBtn.addEventListener("click", () => void onRefreshClick());
+  mapToggleBtn.addEventListener("click", onMapToggleClick);
 
   void (async () => {
     await registerListeners();

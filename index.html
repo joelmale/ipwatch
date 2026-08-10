@@ -67,8 +67,24 @@
       </section>
 
       <section class="panel panel--map">
-        <h2 class="panel__title">Map</h2>
-        <div id="map"></div>
+        <div class="panel__header">
+          <h2 class="panel__title">Map</h2>
+          <button
+            id="map-toggle-btn"
+            type="button"
+            class="map-toggle-btn"
+            aria-expanded="false"
+            aria-controls="map-pane"
+          >
+            Show map
+          </button>
+        </div>
+        <div id="map-pane" class="map-pane" hidden>
+          <div id="map-unavailable" class="map-unavailable" hidden>
+            Location unavailable — the latest lookup has no coordinates.
+          </div>
+          <div id="map"></div>
+        </div>
       </section>
     </main>
   </body>

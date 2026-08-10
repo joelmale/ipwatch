@@ -234,18 +234,73 @@ button#refresh-btn:disabled {
 }
 
 /* ---------------------------------------------------------------------- */
-/* Map panel (filled by a later task)                                     */
+/* Map panel                                                              */
 /* ---------------------------------------------------------------------- */
 
 .panel--map {
   padding: 16px 18px 18px;
 }
 
+.panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.panel__header .panel__title {
+  margin: 0;
+}
+
+.map-toggle-btn {
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  padding: 0.4em 0.9em;
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--color-text);
+  background-color: var(--color-surface);
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.map-toggle-btn:hover {
+  border-color: var(--color-accent);
+}
+
+.map-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.map-unavailable {
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  background: var(--color-checking-bg);
+  color: var(--color-checking);
+}
+
 #map {
   height: 260px;
   border-radius: 8px;
   background: var(--color-bg);
-  border: 1px dashed var(--color-border);
+  border: 1px solid var(--color-border);
+}
+
+#map:not([hidden]) {
+  display: block;
+}
+
+/* Leaflet's default panes/controls need to sit above our own layout, but
+   stay well under anything modal-like the app might add later. */
+.leaflet-container {
+  border-radius: 8px;
+  font-family: var(--font-sans);
 }
 
 /* ---------------------------------------------------------------------- */
