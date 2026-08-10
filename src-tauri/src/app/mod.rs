@@ -16,7 +16,7 @@ use crate::db::{ChangeReason, Db, IpEvent};
 use crate::dnsleak::{self, BashWs, LeakReport};
 use crate::netinfo::{self, NetInfo};
 use crate::poller::{Change, Poller, Snapshot};
-use crate::providers::{default_geo_chain, default_ip_chain, http_client};
+use crate::providers::{default_geo_chain, default_ip_chain, http_client, GeoInfo};
 
 pub mod notify;
 pub mod tiles;
@@ -71,18 +71,80 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let dns_leak_guard: DnsLeakGuard = Arc::new(AsyncMutex::new(()));
     app.manage(dns_leak_guard);
 
+    // Carry the last persisted reading across the restart, so an unchanged IP
+    // classifies as no-change instead of `Initial` and does not add a
+    // duplicate row on every launch. Read synchronously here, applied inside
+    // the task below so it lands before the first tick.
+    let seed_snapshot = last_snapshot(&shared_db);
+
     // The refresh loop goes onto Tauri's runtime, not via `Poller::spawn`:
     // `setup` runs on the main thread with no ambient Tokio runtime, so the
     // bare `tokio::spawn` inside `spawn()` panics with "there is no reactor
     // running". The loop body itself still lives in poller/mod.rs, which
     // stays Tauri-free by design.
-    tauri::async_runtime::spawn(poller.clone().run());
+    let poll_handle = poller.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Some(snapshot) = seed_snapshot {
+            poll_handle.seed(snapshot).await;
+        }
+        poll_handle.run().await;
+    });
 
     tray::init(app, poller.clone())?;
 
     spawn_event_bridge(handle, poller, shared_db);
 
     Ok(())
+}
+
+/// Rebuilds a `Snapshot` from the newest persisted `ip_events` row, for
+/// seeding change detection across a restart.
+///
+/// Necessarily partial: `ip_events` stores country, country code and ISP but
+/// not city, coordinates, timezone or org. That is sufficient, because those
+/// three fields are exactly what `classify` compares, and the poller replaces
+/// the whole snapshot on its first live tick.
+///
+/// Returns `None` when there is no history, the database is unavailable, or
+/// the stored address will not parse — all of which simply mean "no baseline",
+/// leaving the first reading to classify as `Initial` as it did before.
+fn last_snapshot(db: &SharedDb) -> Option<Snapshot> {
+    let guard = match db.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    let event = match guard.as_ref()?.latest_event() {
+        Ok(event) => event?,
+        Err(err) => {
+            tracing::warn!(%err, "could not read the last ip event; starting without a baseline");
+            return None;
+        }
+    };
+
+    let ip = match event.external_ip.parse() {
+        Ok(ip) => ip,
+        Err(err) => {
+            tracing::warn!(
+                %err,
+                stored = %event.external_ip,
+                "stored external ip will not parse; starting without a baseline"
+            );
+            return None;
+        }
+    };
+
+    Some(Snapshot {
+        ip,
+        geo: GeoInfo {
+            ip: Some(ip),
+            country: event.country,
+            country_code: event.country_code,
+            isp: event.isp,
+            ..GeoInfo::default()
+        },
+        observed_at: event.ts,
+    })
 }
 
 /// Resolves `app_data_dir()`, creates it if this is a fresh install, and

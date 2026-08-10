@@ -135,6 +135,27 @@ impl Poller {
         self.state.read().await.clone()
     }
 
+    /// Installs a starting point for change detection, without publishing a
+    /// `Change` or writing history.
+    ///
+    /// Used at startup to carry the last persisted reading across a restart.
+    /// Without it the poller begins every session with no previous snapshot,
+    /// so `classify` returns `Initial` and a fresh row is written on every
+    /// launch even when nothing actually changed — which fills the history
+    /// view with duplicates.
+    ///
+    /// A seeded snapshot is intentionally partial: `ip_events` stores only
+    /// country, country code and ISP, which is exactly what `classify`
+    /// compares, and `handle_success` replaces it wholesale on the first live
+    /// poll. Does nothing if a snapshot is already present, so this can never
+    /// clobber a live reading.
+    pub async fn seed(&self, snapshot: Snapshot) {
+        let mut state = self.state.write().await;
+        if state.is_none() {
+            *state = Some(snapshot);
+        }
+    }
+
     /// Whether the most recent tick succeeded.
     ///
     /// Deliberately distinct from `current().is_some()`: the last-known
@@ -185,15 +206,22 @@ impl Poller {
         }
 
         let previous = self.state.read().await.clone();
+        let reason = classify(previous.as_ref(), &current);
 
-        let Some(reason) = classify(previous.as_ref(), &current) else {
-            return;
-        };
-
+        // Store the fresh snapshot even when nothing changed. Two reasons:
+        // `observed_at` must advance so the UI can say when the reading was
+        // last *verified* rather than when it last *changed*; and a snapshot
+        // seeded from the database carries only the columns `ip_events` has,
+        // so it must be replaced by a complete one on the first live poll or
+        // the details window would show blank city/coordinates/ASN forever.
         {
             let mut state = self.state.write().await;
             *state = Some(current.clone());
         }
+
+        let Some(reason) = reason else {
+            return;
+        };
 
         let _ = self.tx.send(Change {
             previous,
@@ -374,6 +402,88 @@ mod tests {
         assert!(
             changes.try_recv().is_err(),
             "must not republish Offline on repeated failing ticks"
+        );
+    }
+
+    fn idle_poller() -> Poller {
+        // No providers, so no tick can ever succeed or touch the network.
+        // Enough to exercise seed/state handling directly.
+        let client = crate::providers::http_client().expect("client builds without network access");
+        Poller::with_interval(
+            Chain::new(Vec::new()),
+            Chain::new(Vec::new()),
+            client,
+            Duration::from_secs(60),
+        )
+    }
+
+    #[tokio::test]
+    async fn seed_installs_a_baseline_without_publishing() {
+        let poller = idle_poller();
+        let mut changes = poller.subscribe();
+
+        poller
+            .seed(snapshot("1.1.1.1", Some("US"), Some("Cloudflare")))
+            .await;
+
+        assert_eq!(poller.current().await.map(|s| s.ip.to_string()).as_deref(), Some("1.1.1.1"));
+        assert!(
+            changes.try_recv().is_err(),
+            "seeding is bookkeeping, not an observation: it must not publish a Change"
+        );
+    }
+
+    #[tokio::test]
+    async fn seed_never_clobbers_a_live_reading() {
+        let poller = idle_poller();
+
+        poller.seed(snapshot("1.1.1.1", Some("US"), None)).await;
+        poller.seed(snapshot("2.2.2.2", Some("DE"), None)).await;
+
+        assert_eq!(
+            poller.current().await.map(|s| s.ip.to_string()).as_deref(),
+            Some("1.1.1.1"),
+            "a second seed must not overwrite what is already there"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_seeded_baseline_makes_an_unchanged_restart_silent() {
+        // The restart-duplicate bug: without a baseline the first reading of
+        // every session classified as Initial and wrote another history row.
+        let poller = idle_poller();
+        let stored = snapshot("1.1.1.1", Some("US"), Some("Cloudflare"));
+        poller.seed(stored.clone()).await;
+
+        let fresh = Snapshot { observed_at: 12_345, ..stored.clone() };
+
+        assert_eq!(
+            classify(poller.current().await.as_ref(), &fresh),
+            None,
+            "same ip, country and isp after a restart is not a change"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_tick_still_advances_the_stored_snapshot() {
+        // `observed_at` must track when the reading was last *verified*, not
+        // when it last *changed*, and a partial seeded snapshot has to be
+        // replaced by a complete one on the first live poll.
+        let poller = idle_poller();
+        poller.seed(snapshot("1.1.1.1", Some("US"), Some("Cloudflare"))).await;
+
+        let mut fresh = snapshot("1.1.1.1", Some("US"), Some("Cloudflare"));
+        fresh.observed_at = 99_999;
+        fresh.geo.city = Some("Manassas".into());
+
+        poller.handle_success(fresh).await;
+
+        let stored = poller.current().await.expect("a snapshot is stored");
+        assert_eq!(stored.observed_at, 99_999, "observed_at must advance on an unchanged tick");
+        assert_eq!(
+            stored.geo.city.as_deref(),
+            Some("Manassas"),
+            "the fuller live snapshot must replace the partial seeded one"
         );
     }
 }
