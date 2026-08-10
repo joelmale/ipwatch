@@ -1,3 +1,14 @@
+//! ipwatch — monitors external IP, geolocation, and DNS to verify VPN status.
+//!
+//! All network access lives here in Rust; the webview never makes requests, so
+//! the CSP can stay strict. The backend talks to the frontend over Tauri events
+//! (`ip-changed`, `refresh-started`, `refresh-done`) and receives commands back.
+
+pub mod db;
+pub mod netinfo;
+pub mod poller;
+pub mod providers;
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
