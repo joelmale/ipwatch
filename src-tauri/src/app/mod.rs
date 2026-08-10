@@ -10,13 +10,15 @@ use std::sync::{Arc, Mutex as StdMutex};
 use reqwest::Client;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex as AsyncMutex};
 
 use crate::db::{ChangeReason, Db, IpEvent};
+use crate::dnsleak::{self, BashWs, LeakReport};
 use crate::netinfo::{self, NetInfo};
 use crate::poller::{Change, Poller, Snapshot};
 use crate::providers::{default_geo_chain, default_ip_chain, http_client};
 
+pub mod notify;
 pub mod tiles;
 pub mod tray;
 
@@ -29,6 +31,14 @@ pub mod tray;
 /// call, contention is nil at a 60s poll interval, and no code path holds the
 /// guard across an `.await`.
 pub type SharedDb = Arc<StdMutex<Option<Db>>>;
+
+/// Guards `run_dns_leak_test` against overlapping invocations.
+///
+/// A `tokio::sync::Mutex` rather than the std one: the guard is held across
+/// `.await` points for the several-second duration of a test, which a std
+/// mutex cannot do soundly. See `run_dns_leak_test` for why a second
+/// concurrent call is rejected outright rather than queued.
+pub type DnsLeakGuard = Arc<AsyncMutex<()>>;
 
 /// Response payload for the `get_details` command.
 #[derive(Debug, Clone, Serialize)]
@@ -57,6 +67,9 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     });
     let poller = Arc::new(Poller::new(default_ip_chain(), default_geo_chain(), client));
     app.manage(poller.clone());
+
+    let dns_leak_guard: DnsLeakGuard = Arc::new(AsyncMutex::new(()));
+    app.manage(dns_leak_guard);
 
     // The refresh loop goes onto Tauri's runtime, not via `Poller::spawn`:
     // `setup` runs on the main thread with no ambient Tokio runtime, so the
@@ -129,6 +142,9 @@ fn spawn_event_bridge(app: AppHandle, poller: Arc<Poller>, db: SharedDb) {
                     if let Err(err) = app.emit("ip-changed", &change) {
                         tracing::error!(%err, "failed to emit ip-changed event");
                     }
+                    // Never allowed to affect monitoring: notify::notify_change
+                    // logs and swallows its own errors internally.
+                    notify::notify_change(&app, &change);
                 }
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                     tracing::warn!(
@@ -237,4 +253,37 @@ pub fn get_history(limit: u32, db: State<'_, SharedDb>) -> Result<Vec<IpEvent>, 
         Some(db) => db.recent_events(limit).map_err(|err| err.to_string()),
         None => Ok(Vec::new()),
     }
+}
+
+/// Runs an on-demand DNS leak test (PLAN.md Phase 3): resolves bash.ws probe
+/// subdomains through the system resolver, asks bash.ws which resolvers
+/// reached it, and compares those resolvers' ASN against the current
+/// external IP's ASN (from the last successful poll, if any) to draw a
+/// verdict. See `dnsleak` module docs for the full protocol and comparison
+/// rule.
+///
+/// Concurrency: guarded by `DnsLeakGuard::try_lock`, which rejects a second
+/// concurrent invocation immediately rather than queuing it. Each test takes
+/// several seconds and is tied to one randomly-generated bash.ws session; two
+/// running at once from the same app instance has no legitimate use (the UI
+/// can only show one result at a time), and silently queuing the second call
+/// would leave its caller waiting with no feedback for no benefit. Sequential
+/// calls — the normal "run it again" case — are always safe: the guard is
+/// released as soon as the previous call's future completes or is dropped.
+#[tauri::command]
+pub async fn run_dns_leak_test(
+    poller: State<'_, Arc<Poller>>,
+    guard: State<'_, DnsLeakGuard>,
+) -> Result<LeakReport, String> {
+    let _permit = guard
+        .try_lock()
+        .map_err(|_| "a DNS leak test is already running".to_string())?;
+
+    let expected_asn = poller.current().await.and_then(|snapshot| snapshot.geo.asn);
+    let client = dnsleak::http_client();
+    let service = BashWs::default();
+
+    dnsleak::run_test(&service, &client, expected_asn.as_deref())
+        .await
+        .map_err(|err| err.to_string())
 }
