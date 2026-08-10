@@ -58,9 +58,12 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let poller = Arc::new(Poller::new(default_ip_chain(), default_geo_chain(), client));
     app.manage(poller.clone());
 
-    // The poller's own refresh loop; entirely inside poller/mod.rs, which
+    // The refresh loop goes onto Tauri's runtime, not via `Poller::spawn`:
+    // `setup` runs on the main thread with no ambient Tokio runtime, so the
+    // bare `tokio::spawn` inside `spawn()` panics with "there is no reactor
+    // running". The loop body itself still lives in poller/mod.rs, which
     // stays Tauri-free by design.
-    let _poll_loop = poller.clone().spawn();
+    tauri::async_runtime::spawn(poller.clone().run());
 
     tray::init(app, poller.clone())?;
 

@@ -224,16 +224,28 @@ impl Poller {
         });
     }
 
-    /// Runs the refresh loop on its own tokio task until dropped.
+    /// The refresh loop itself, as a plain future.
+    ///
+    /// Kept separate from `spawn` so a caller can put it on whichever executor
+    /// it already has. Tauri's `setup` runs on the main thread with no ambient
+    /// Tokio runtime, where `tokio::spawn` panics outright — such callers
+    /// should drive this directly instead.
+    pub async fn run(self: Arc<Self>) {
+        let mut ticker = tokio::time::interval(self.interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            self.refresh_once().await;
+        }
+    }
+
+    /// Spawns `run` onto the ambient Tokio runtime.
+    ///
+    /// Requires an active runtime context. From a sync context that has none
+    /// (notably Tauri's `setup`), spawn `run()` on that host's executor rather
+    /// than calling this.
     pub fn spawn(self: Arc<Self>) -> JoinHandle<()> {
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(self.interval);
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            loop {
-                ticker.tick().await;
-                self.refresh_once().await;
-            }
-        })
+        tokio::spawn(self.run())
     }
 }
 
