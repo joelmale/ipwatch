@@ -5,7 +5,11 @@
 # Node / frontend
 node_modules/
 dist/
+dist-ssr/
 .vite/
+*.local
+*.log
+npm-debug.log*
 
 # Local data & env
 *.db
@@ -18,7 +22,8 @@ dist/
 Thumbs.db
 
 # IDE
-.vscode/
+.vscode/*
+!.vscode/extensions.json
 .idea/
 
 # AI tooling (local only)
