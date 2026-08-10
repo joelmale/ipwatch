@@ -1,0 +1,27 @@
+# Rust / Tauri
+/src-tauri/target/
+/src-tauri/gen/
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+
+# Local data & env
+*.db
+*.sqlite
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# AI tooling (local only)
+.claude/
+CLAUDE.md
+PLAN.md
