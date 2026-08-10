@@ -33,7 +33,7 @@ pub struct Snapshot {
 }
 
 /// Published whenever the poller decides something changed.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Change {
     pub previous: Option<Snapshot>,
     pub current: Option<Snapshot>,
@@ -133,6 +133,18 @@ impl Poller {
     /// UI, rather than inferring staleness from an absence here.
     pub async fn current(&self) -> Option<Snapshot> {
         self.state.read().await.clone()
+    }
+
+    /// Whether the most recent tick succeeded.
+    ///
+    /// Deliberately distinct from `current().is_some()`: the last-known
+    /// snapshot survives an outage on purpose, so only this reports live
+    /// reachability. Read this rather than deriving online-ness from the
+    /// `Change` stream — recovering to the *same* IP produces no `Change`
+    /// (`classify` returns `None`), so a stream-derived flag would stay stuck
+    /// offline after a real recovery.
+    pub async fn is_online(&self) -> bool {
+        !*self.offline.read().await
     }
 
     /// Performs exactly one refresh: resolve IP, resolve geo, classify

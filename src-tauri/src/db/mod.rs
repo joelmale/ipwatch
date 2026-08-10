@@ -7,12 +7,18 @@
 use std::path::Path;
 
 use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
 
 pub mod migrations;
 
 /// Why a snapshot was recorded. `Initial` is the first observation of a
 /// session; `Country`/`Isp` changes are the VPN-drop signals.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `rename_all = "snake_case"` keeps the wire form (sent to the frontend and
+/// used by `serde_json`) identical to `as_str()`'s DB representation — see
+/// `serde_matches_as_str` below, which pins that down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ChangeReason {
     Initial,
     IpChanged,
@@ -45,7 +51,7 @@ impl ChangeReason {
 }
 
 /// One row of `ip_events`. `id` is `None` before insertion.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IpEvent {
     pub id: Option<i64>,
     /// Unix seconds.
@@ -232,6 +238,26 @@ mod tests {
             ChangeReason::Offline,
         ] {
             assert_eq!(ChangeReason::from_str(reason.as_str()), Some(reason));
+        }
+    }
+
+    #[test]
+    fn serde_matches_as_str() {
+        // The frontend and the DB's stored strings must agree exactly, or
+        // history rows serialized to JSON would desync from what `as_str()`
+        // persists. Pin every variant down, not just one.
+        for (reason, expected) in [
+            (ChangeReason::Initial, "initial"),
+            (ChangeReason::IpChanged, "ip_changed"),
+            (ChangeReason::CountryChanged, "country_changed"),
+            (ChangeReason::IspChanged, "isp_changed"),
+            (ChangeReason::Offline, "offline"),
+        ] {
+            assert_eq!(reason.as_str(), expected);
+            assert_eq!(
+                serde_json::to_value(reason).unwrap(),
+                serde_json::Value::String(expected.to_string())
+            );
         }
     }
 

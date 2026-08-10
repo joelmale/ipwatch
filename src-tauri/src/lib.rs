@@ -4,6 +4,7 @@
 //! the CSP can stay strict. The backend talks to the frontend over Tauri events
 //! (`ip-changed`, `refresh-started`, `refresh-done`) and receives commands back.
 
+pub mod app;
 pub mod db;
 pub mod netinfo;
 pub mod poller;
@@ -19,7 +20,13 @@ fn greet(name: &str) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet])
+        .setup(app::setup)
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            app::get_details,
+            app::refresh,
+            app::get_history
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
