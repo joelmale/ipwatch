@@ -6,7 +6,7 @@
 //! no Tauri dependency, so it is unit-testable without a running app. Only
 //! `init` and the small glue below it touch `tauri::App`/`AppHandle`.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use tauri::image::Image;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -116,6 +116,34 @@ impl SessionBaseline {
 
         self.warn_latched
     }
+
+    /// Re-baselines live, in response to the `expected_country_code` setting
+    /// changing mid-session (PLAN.md Phase 4). Unlike `observe`, this
+    /// deliberately discards any latch earned under the *old* expectation:
+    /// the whole point of changing the setting is to re-judge the current
+    /// situation against the new one, not to keep punishing a mismatch that
+    /// no longer applies. Concretely, if the user sets the expected country
+    /// to the country they are actually in, this must clear the warn state,
+    /// not leave it latched.
+    ///
+    /// Behaves like a fresh `SessionBaseline::new(new_expected)` that
+    /// immediately observes `current_country_code` (the latest known
+    /// snapshot) once under the new rules — including restoring the
+    /// session-first-country fallback when `new_expected` is `None`, since
+    /// the fallback baseline field is reset here too and `current_country_code`
+    /// becomes its first observation, exactly as at startup.
+    ///
+    /// Returns the resulting warn-latched state, same as `observe`.
+    fn re_baseline(
+        &mut self,
+        new_expected: Option<String>,
+        current_country_code: Option<&str>,
+    ) -> bool {
+        self.expected = new_expected;
+        self.country_code = None;
+        self.warn_latched = false;
+        self.observe(current_country_code)
+    }
 }
 
 /// Builds the `"<CC> · <ip>"` tooltip, degrading gracefully when data is
@@ -167,6 +195,65 @@ impl TrayIcons {
     }
 }
 
+/// Shared handle onto the running tray, managed as Tauri state (see
+/// `SharedDb`/`SharedSettings` in `app/mod.rs` for the same convention) so
+/// the `set_settings` command can apply a change to `expected_country_code`
+/// live instead of waiting for the next `Change` off `poller.subscribe()` —
+/// which could be a full poll interval away (up to an hour).
+///
+/// Only `baseline` needs its own lock: `TrayIcon` has its own interior
+/// mutability (`set_icon`/`set_tooltip` take `&self`), `TrayIcons` is decoded
+/// once at startup and read-only thereafter, and `Poller` is already
+/// internally synchronized (see the `poller` module).
+pub struct TrayLiveState {
+    baseline: StdMutex<SessionBaseline>,
+    tray: TrayIcon,
+    icons: TrayIcons,
+    poller: Arc<Poller>,
+}
+
+/// See `TrayLiveState`'s doc comment for why this needs no `Mutex` of its
+/// own the way `SharedDb`/`SharedSettings` do.
+pub type SharedTray = Arc<TrayLiveState>;
+
+impl TrayLiveState {
+    /// Applies a live change to `expected_country_code` (PLAN.md Phase 4):
+    /// re-baselines against the poller's *current* snapshot under the new
+    /// expectation (see `SessionBaseline::re_baseline`) and immediately
+    /// pushes the resulting icon/tooltip to the tray, rather than waiting
+    /// for the next `Change` to arrive.
+    ///
+    /// Called from the `set_settings` command; never called from the
+    /// `spawn_live_updates` loop, which uses `observe` (via `apply`)
+    /// instead — see `re_baseline`'s doc comment for why the two must not be
+    /// conflated.
+    pub async fn set_expected_country(&self, expected: Option<String>) {
+        let snapshot = self.poller.current().await;
+        let online = self.poller.is_online().await;
+
+        let warn_latched = {
+            let mut baseline = match self.baseline.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            baseline.re_baseline(
+                expected,
+                snapshot
+                    .as_ref()
+                    .and_then(|s| s.geo.country_code.as_deref()),
+            )
+        };
+
+        push(
+            &self.tray,
+            &self.icons,
+            warn_latched,
+            snapshot.as_ref(),
+            online,
+        );
+    }
+}
+
 /// Builds the tray icon + menu, wires the click/menu handlers and
 /// close-to-tray behaviour, sets the initial icon/tooltip from
 /// `poller.current()`, and spawns the task that keeps both live. Called once
@@ -174,7 +261,9 @@ impl TrayIcons {
 ///
 /// `expected_country_code` is the persisted Phase 4 setting, read once at
 /// startup and handed to the `SessionBaseline` this call spawns — see that
-/// type's doc comment for the two baseline modes.
+/// type's doc comment for the two baseline modes. The resulting
+/// `TrayLiveState` is also managed as Tauri state (`SharedTray`) so
+/// `set_settings` can reach it later; see that type's doc comment.
 pub fn init(
     app: &tauri::App,
     poller: Arc<Poller>,
@@ -234,7 +323,15 @@ pub fn init(
         .build(app)?;
 
     wire_close_to_tray(app);
-    spawn_live_updates(poller, tray, icons, expected_country_code);
+
+    let state: SharedTray = Arc::new(TrayLiveState {
+        baseline: StdMutex::new(SessionBaseline::new(expected_country_code)),
+        tray,
+        icons,
+        poller,
+    });
+    app.manage(state.clone());
+    spawn_live_updates(state);
 
     Ok(())
 }
@@ -295,37 +392,19 @@ fn wire_close_to_tray(app: &tauri::App) {
 /// itself wake this loop to clear a stale "(offline)" tooltip — the tray
 /// only reacts to published `Change`s, the same constraint the frontend's
 /// `ip-changed` bridge has.
-fn spawn_live_updates(
-    poller: Arc<Poller>,
-    tray: TrayIcon,
-    icons: TrayIcons,
-    expected_country_code: Option<String>,
-) {
+fn spawn_live_updates(state: SharedTray) {
     tauri::async_runtime::spawn(async move {
-        let mut baseline = SessionBaseline::new(expected_country_code);
-        let mut rx = poller.subscribe();
+        let mut rx = state.poller.subscribe();
 
-        let initial = poller.current().await;
-        let initial_online = poller.is_online().await;
-        apply(
-            &tray,
-            &icons,
-            &mut baseline,
-            initial.as_ref(),
-            initial_online,
-        );
+        let initial = state.poller.current().await;
+        let initial_online = state.poller.is_online().await;
+        apply(&state, initial.as_ref(), initial_online);
 
         loop {
             match rx.recv().await {
                 Ok(change) => {
-                    let online = poller.is_online().await;
-                    apply(
-                        &tray,
-                        &icons,
-                        &mut baseline,
-                        change.current.as_ref(),
-                        online,
-                    );
+                    let online = state.poller.is_online().await;
+                    apply(&state, change.current.as_ref(), online);
                 }
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                     // Never exit on Lagged — that would freeze the tray for
@@ -343,17 +422,33 @@ fn spawn_live_updates(
     });
 }
 
-/// Updates the baseline latch, then pushes the resulting icon and tooltip to
-/// the tray. Failures are logged, not propagated — a tray update failing is
-/// never worth tearing down the update loop over.
-fn apply(
+/// Feeds one observation into the shared baseline's normal (latching)
+/// `observe`, then pushes the resulting icon/tooltip to the tray. Used by
+/// `spawn_live_updates` for every `Change` off the poller. Contrast with
+/// `TrayLiveState::set_expected_country`, which re-baselines instead of
+/// observing — see that method's doc comment.
+fn apply(state: &TrayLiveState, snapshot: Option<&Snapshot>, online: bool) {
+    let warn_latched = {
+        let mut baseline = match state.baseline.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        baseline.observe(snapshot.and_then(|s| s.geo.country_code.as_deref()))
+    };
+    push(&state.tray, &state.icons, warn_latched, snapshot, online);
+}
+
+/// Pushes an already-decided `warn_latched` state, plus `snapshot`/`online`,
+/// to the tray as an icon + tooltip update. Failures are logged, not
+/// propagated — a tray update failing is never worth tearing down the
+/// update loop, or failing the `set_settings` command, over.
+fn push(
     tray: &TrayIcon,
     icons: &TrayIcons,
-    baseline: &mut SessionBaseline,
+    warn_latched: bool,
     snapshot: Option<&Snapshot>,
     online: bool,
 ) {
-    let warn_latched = baseline.observe(snapshot.and_then(|s| s.geo.country_code.as_deref()));
     let icon_kind = IconKind::select(snapshot.is_some(), online, warn_latched);
 
     if let Err(err) = tray.set_icon(Some(icons.get(icon_kind))) {
@@ -494,6 +589,62 @@ mod tests {
     fn missing_country_code_does_not_latch_against_an_expected_baseline() {
         let mut baseline = SessionBaseline::new(Some("US".to_string()));
         assert!(!baseline.observe(None));
+    }
+
+    // --- SessionBaseline::re_baseline (live setting change, PLAN.md Phase 4) ---
+
+    #[test]
+    fn re_baseline_to_the_country_already_observed_clears_a_latched_warn() {
+        // This is the entire point of the setting: latch under the old
+        // expectation, then set the expectation to the country the user is
+        // actually in, and the tray must clear to green.
+        let mut baseline = SessionBaseline::new(Some("US".to_string()));
+        assert!(baseline.observe(Some("FR")));
+
+        assert!(!baseline.re_baseline(Some("FR".to_string()), Some("FR")));
+    }
+
+    #[test]
+    fn re_baseline_to_a_still_different_country_stays_latched() {
+        let mut baseline = SessionBaseline::new(Some("US".to_string()));
+        assert!(baseline.observe(Some("FR")));
+
+        assert!(baseline.re_baseline(Some("NL".to_string()), Some("FR")));
+    }
+
+    #[test]
+    fn re_baseline_to_none_restores_session_first_country_fallback() {
+        // Latch under an expected baseline, then clear the setting back to
+        // None: must behave like a fresh start under fallback mode, not
+        // stay latched and not treat the current country as a mismatch.
+        let mut baseline = SessionBaseline::new(Some("US".to_string()));
+        assert!(baseline.observe(Some("FR")));
+
+        assert!(!baseline.re_baseline(None, Some("FR")));
+        // The re-baselined fallback mode should behave exactly like a fresh
+        // `SessionBaseline::new(None)` that just observed "FR" for the first
+        // time: FR is now the fallback baseline, so observing FR again does
+        // not latch...
+        assert!(!baseline.observe(Some("FR")));
+        // ...but a genuine divergence still does.
+        assert!(baseline.observe(Some("DE")));
+    }
+
+    #[test]
+    fn re_baseline_with_no_current_country_code_does_not_latch() {
+        // If the poller has no snapshot yet (or no country code in it) at
+        // the moment the setting changes, there is nothing to compare
+        // against — must not spuriously latch.
+        let mut baseline = SessionBaseline::new(None);
+        assert!(!baseline.re_baseline(Some("US".to_string()), None));
+    }
+
+    #[test]
+    fn re_baseline_from_none_to_expected_latches_on_mismatch() {
+        let mut baseline = SessionBaseline::new(None);
+        baseline.observe(Some("US")); // sets fallback baseline to US, unlatched
+
+        assert!(baseline.re_baseline(Some("FR".to_string()), Some("US")));
     }
 
     // --- format_tooltip ---

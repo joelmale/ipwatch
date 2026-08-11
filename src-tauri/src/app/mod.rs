@@ -89,6 +89,12 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     // backup).
     apply_autostart(&handle, launch_at_startup);
 
+    // Age/size-bounded, and run on its own background task so a slow or
+    // failing prune can never delay startup or block a concurrent tile
+    // request — see `tiles::spawn_cache_prune` for the limits and safety
+    // rules.
+    tiles::spawn_cache_prune(handle.clone());
+
     let client = http_client().unwrap_or_else(|err| {
         tracing::error!(%err, "failed to build the configured http client; falling back to a default reqwest client");
         Client::new()
@@ -497,23 +503,34 @@ pub fn get_settings(settings: State<'_, SharedSettings>) -> Result<Settings, Str
 /// (the setting is applied for the rest of this session even if it won't
 /// survive a restart), mirroring how a failed history write in
 /// `persist_if_warranted` doesn't stop monitoring either.
+///
+/// `expected_country_code` is applied live (PLAN.md Phase 4): when it
+/// changes, `tray::TrayLiveState::set_expected_country` re-baselines the
+/// tray's warn latch against the poller's *current* snapshot and pushes a
+/// fresh icon/tooltip immediately, rather than waiting for the next `Change`
+/// off the poller — which could be up to a full poll interval away. Async
+/// only because that call is: every other side effect here stays
+/// synchronous.
 #[tauri::command]
-pub fn set_settings(
+pub async fn set_settings(
     app: AppHandle,
     new_settings: Settings,
     settings: State<'_, SharedSettings>,
     poller: State<'_, Arc<Poller>>,
+    tray: State<'_, tray::SharedTray>,
 ) -> Result<Settings, String> {
     let mut effective = new_settings;
     effective.clamp();
 
-    {
+    let previous_expected_country_code = {
         let mut guard = match settings.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
+        let previous = guard.expected_country_code.clone();
         *guard = effective.clone();
-    }
+        previous
+    };
 
     match settings_file_path(&app) {
         Some(path) => {
@@ -526,6 +543,11 @@ pub fn set_settings(
 
     poller.set_interval(Duration::from_secs(effective.poll_interval_secs));
     apply_autostart(&app, effective.launch_at_startup);
+
+    if effective.expected_country_code != previous_expected_country_code {
+        tray.set_expected_country(effective.expected_country_code.clone())
+            .await;
+    }
 
     Ok(effective)
 }
