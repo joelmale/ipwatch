@@ -12,8 +12,30 @@ pub mod poller;
 pub mod providers;
 pub mod settings;
 
+/// Installs the `tracing` subscriber.
+///
+/// Without this, every `tracing::warn!`/`error!` in the crate is discarded —
+/// including the whole degradation story: an unopenable database, a corrupt
+/// settings file falling back to defaults, provider chains failing over, a
+/// toast that never fired. Those paths deliberately keep the app running
+/// instead of crashing, which is only defensible if the reason is recorded
+/// somewhere. Silent degradation is indistinguishable from a bug.
+///
+/// `RUST_LOG` overrides the default filter. `try_init` rather than `init` so a
+/// second call (tests, a re-entrant mobile entry point) cannot panic.
+fn init_tracing() {
+    use tracing_subscriber::{fmt, EnvFilter};
+
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("ipwatch=info,ipwatch_lib=info,warn"));
+
+    let _ = fmt().with_env_filter(filter).try_init();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    init_tracing();
+
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())

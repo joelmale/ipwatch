@@ -260,6 +260,22 @@ fn open_settings(handle: &AppHandle) -> Settings {
 /// `set_settings` call.
 fn apply_autostart(app: &AppHandle, enabled: bool) {
     let manager = app.autolaunch();
+
+    // Only act when the OS state actually differs. `disable()` on an entry
+    // that was never registered fails with "the system cannot find the file
+    // specified", so calling it unconditionally at every startup logged an
+    // error on every launch for the default (disabled) case — noise that
+    // would eventually mask a real failure here.
+    match manager.is_enabled() {
+        Ok(current) if current == enabled => return,
+        Ok(_) => {}
+        Err(err) => {
+            // Could not read the current state; fall through and try to apply
+            // the desired one anyway rather than silently skipping it.
+            tracing::debug!(%err, "could not read launch-at-startup state; applying anyway");
+        }
+    }
+
     let result = if enabled { manager.enable() } else { manager.disable() };
     if let Err(err) = result {
         tracing::error!(%err, enabled, "failed to apply launch-at-startup setting");
