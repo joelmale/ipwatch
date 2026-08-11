@@ -312,6 +312,35 @@ async fn geo_request_path_includes_ip_when_a_specific_ip_is_requested() {
 }
 
 #[tokio::test]
+async fn geo_request_path_includes_ipv6_address_unbracketed() {
+    // Brackets around a v6 literal (`[::1]`) are an authority-component
+    // requirement (RFC 3986) — inside a path *segment* a bare colon is
+    // valid `pchar`, so ip-api.com's documented `/json/{query}` form takes
+    // the address exactly as `Display` renders it, with no bracketing. This
+    // pins that expectation down: if it ever regressed to bracketing (or
+    // percent-encoding) the address, this mock's path wouldn't match.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/json/2001:db8::1"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(IP_API_SUCCESS_BODY, "application/json"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = http_client().expect("client builds");
+    let provider = IpApiCom::with_base_url(format!("{}/json", server.uri()));
+
+    let requested_ip: IpAddr = "2001:db8::1".parse().unwrap();
+    provider
+        .fetch_geo(&client, Some(requested_ip))
+        .await
+        .expect("unbracketed ipv6 path should match");
+}
+
+#[tokio::test]
 async fn geo_request_path_omits_ip_when_no_specific_ip_is_requested() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

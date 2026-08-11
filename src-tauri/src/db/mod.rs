@@ -204,6 +204,24 @@ mod tests {
     }
 
     #[test]
+    fn round_trips_an_ipv6_event() {
+        // `external_ip` is TEXT, so nothing about the schema should care
+        // about address family, but the round trip through `IpEvent` (a
+        // plain `String`, not `IpAddr`) is worth pinning directly rather
+        // than assuming.
+        let db = db();
+        let original = event(1_700_000_000, "2001:4860:4860::8888", ChangeReason::Initial);
+
+        db.insert_event(&original).unwrap();
+        let stored = db.latest_event().unwrap().expect("one row");
+
+        assert_eq!(stored.external_ip, "2001:4860:4860::8888");
+        // And it must still parse back into an `IpAddr`, the same as the
+        // startup baseline path (`app::last_snapshot`) requires.
+        assert!(stored.external_ip.parse::<std::net::IpAddr>().is_ok());
+    }
+
+    #[test]
     fn nullable_geo_fields_survive_the_round_trip() {
         // The free API tiers omit fields unpredictably, so NULLs are routine.
         let db = db();

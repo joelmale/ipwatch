@@ -176,6 +176,35 @@ fn split_entries_ignores_unparseable_ip_field_on_ip_entry() {
 }
 
 #[test]
+fn split_entries_parses_ipv6_resolver_and_ip_entries() {
+    // Real bash.ws results on a v6-configured machine return resolver
+    // addresses like this (e.g. a Google Public DNS v6 resolver) — confirm
+    // `split_entries` (which parses via plain `IpAddr::parse`) handles them
+    // exactly like v4, for both the "ip" and "dns" entry kinds.
+    let entries = vec![
+        ServiceEntry {
+            ip: "2600:1900:4000::1".to_string(),
+            country_name: None,
+            asn: None,
+            kind: "ip".to_string(),
+        },
+        ServiceEntry {
+            ip: "2001:4860:4860::8888".to_string(),
+            country_name: Some("United States".to_string()),
+            asn: Some("AS15169 Google LLC".to_string()),
+            kind: "dns".to_string(),
+        },
+    ];
+
+    let (external_ip, resolvers) = split_entries(entries);
+
+    assert_eq!(external_ip, Some("2600:1900:4000::1".parse().unwrap()));
+    assert_eq!(resolvers.len(), 1);
+    assert_eq!(resolvers[0].ip, "2001:4860:4860::8888".parse::<IpAddr>().unwrap());
+    assert_eq!(resolvers[0].asn.as_deref(), Some("AS15169 Google LLC"));
+}
+
+#[test]
 fn split_entries_ignores_entries_of_unknown_type() {
     let entries = vec![ServiceEntry {
         ip: "1.2.3.4".to_string(),

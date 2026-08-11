@@ -19,24 +19,40 @@ use crate::poller::{Poller, Snapshot};
 const ICON_OK: &[u8] = include_bytes!("../../icons/tray-ok.png");
 const ICON_WARN: &[u8] = include_bytes!("../../icons/tray-warn.png");
 const ICON_OFFLINE: &[u8] = include_bytes!("../../icons/tray-offline.png");
+const ICON_UNKNOWN: &[u8] = include_bytes!("../../icons/tray-unknown.png");
 
 /// The main window's label, per `tauri.conf.json` (unlabelled entries default
 /// to `"main"`).
 const MAIN_WINDOW_LABEL: &str = "main";
 
-/// Which of the three embedded icons the tray should currently show.
+/// Which of the four embedded icons the tray should currently show.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IconKind {
     Ok,
     Warn,
     Offline,
+    /// No reading has been obtained yet this session — distinct from
+    /// `Offline`, which means a reading exists but is known stale. See
+    /// `select`'s doc comment for why the distinction matters.
+    Unknown,
 }
 
 impl IconKind {
-    /// Offline always wins — a stale last-known-good reading matters more
-    /// than a latched country warning. Otherwise a latched warning beats ok.
-    fn select(online: bool, warn_latched: bool) -> Self {
-        if !online {
+    /// Unknown wins over everything else: with no snapshot at all, "online"
+    /// and "warn latched" are not yet meaningful, so `has_snapshot` is
+    /// checked first. Otherwise offline wins — a stale last-known-good
+    /// reading matters more than a latched country warning. Otherwise a
+    /// latched warning beats ok.
+    ///
+    /// `Unknown` and `Offline` are deliberately distinct states even though
+    /// both are visually "the app doesn't have a fresh answer right now":
+    /// `Unknown` means "I have never checked", `Offline` means "I checked
+    /// and it failed but I still remember the last answer". Conflating them
+    /// is misleading in a tool whose whole job is telling you what it knows.
+    fn select(has_snapshot: bool, online: bool, warn_latched: bool) -> Self {
+        if !has_snapshot {
+            Self::Unknown
+        } else if !online {
             Self::Offline
         } else if warn_latched {
             Self::Warn
@@ -123,11 +139,12 @@ fn format_tooltip(snapshot: Option<&Snapshot>, online: bool) -> String {
     tooltip
 }
 
-/// The three embedded icons, decoded once at startup.
+/// The four embedded icons, decoded once at startup.
 struct TrayIcons {
     ok: Image<'static>,
     warn: Image<'static>,
     offline: Image<'static>,
+    unknown: Image<'static>,
 }
 
 impl TrayIcons {
@@ -136,6 +153,7 @@ impl TrayIcons {
             ok: Image::from_bytes(ICON_OK)?,
             warn: Image::from_bytes(ICON_WARN)?,
             offline: Image::from_bytes(ICON_OFFLINE)?,
+            unknown: Image::from_bytes(ICON_UNKNOWN)?,
         })
     }
 
@@ -144,6 +162,7 @@ impl TrayIcons {
             IconKind::Ok => self.ok.clone(),
             IconKind::Warn => self.warn.clone(),
             IconKind::Offline => self.offline.clone(),
+            IconKind::Unknown => self.unknown.clone(),
         }
     }
 }
@@ -182,7 +201,7 @@ pub fn init(
     let tray = TrayIconBuilder::new()
         // Matches the "no snapshot yet" tooltip case below; corrected within
         // moments by `spawn_live_updates` priming from `poller.current()`.
-        .icon(icons.get(IconKind::Offline))
+        .icon(icons.get(IconKind::Unknown))
         .tooltip("ipwatch — starting…")
         .menu(&menu)
         // Left click opens Details (the Windows convention); right click
@@ -325,7 +344,7 @@ fn apply(
     online: bool,
 ) {
     let warn_latched = baseline.observe(snapshot.and_then(|s| s.geo.country_code.as_deref()));
-    let icon_kind = IconKind::select(online, warn_latched);
+    let icon_kind = IconKind::select(snapshot.is_some(), online, warn_latched);
 
     if let Err(err) = tray.set_icon(Some(icons.get(icon_kind))) {
         tracing::error!(%err, "failed to update tray icon");
@@ -357,22 +376,44 @@ mod tests {
 
     #[test]
     fn offline_wins_even_when_warn_is_latched() {
-        assert_eq!(IconKind::select(false, true), IconKind::Offline);
+        assert_eq!(IconKind::select(true, false, true), IconKind::Offline);
     }
 
     #[test]
     fn offline_wins_when_not_latched() {
-        assert_eq!(IconKind::select(false, false), IconKind::Offline);
+        assert_eq!(IconKind::select(true, false, false), IconKind::Offline);
     }
 
     #[test]
     fn online_and_latched_is_warn() {
-        assert_eq!(IconKind::select(true, true), IconKind::Warn);
+        assert_eq!(IconKind::select(true, true, true), IconKind::Warn);
     }
 
     #[test]
     fn online_and_not_latched_is_ok() {
-        assert_eq!(IconKind::select(true, false), IconKind::Ok);
+        assert_eq!(IconKind::select(true, true, false), IconKind::Ok);
+    }
+
+    #[test]
+    fn no_snapshot_is_unknown_even_when_online_and_not_latched() {
+        // This is the case that used to render as a misleading green "Ok"
+        // icon: the poller has never completed a tick (so `is_online()` is
+        // still its default `true`), but there is nothing to report yet.
+        assert_eq!(IconKind::select(false, true, false), IconKind::Unknown);
+    }
+
+    #[test]
+    fn no_snapshot_is_unknown_even_when_warn_would_otherwise_be_latched() {
+        assert_eq!(IconKind::select(false, true, true), IconKind::Unknown);
+    }
+
+    #[test]
+    fn no_snapshot_is_unknown_even_when_reported_offline() {
+        // Unknown outranks Offline too: without a snapshot there is no
+        // "last known" reading to call stale, so Unknown is the accurate
+        // state regardless of what `online` says.
+        assert_eq!(IconKind::select(false, false, false), IconKind::Unknown);
+        assert_eq!(IconKind::select(false, false, true), IconKind::Unknown);
     }
 
     // --- SessionBaseline::observe (no expected_country_code: session-first-country fallback) ---

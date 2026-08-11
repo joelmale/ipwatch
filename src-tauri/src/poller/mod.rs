@@ -383,6 +383,23 @@ mod tests {
     }
 
     #[test]
+    fn ipv6_addresses_classify_the_same_as_ipv4() {
+        // `classify` only ever compares via `IpAddr`'s derived `PartialEq`,
+        // never a field of `Ipv4Addr`/`Ipv6Addr` specifically, so there is
+        // no v4-only code path to regress here — this pins that down for
+        // both the "changed" and "unchanged" cases with real v6 literals.
+        let previous = snapshot("2001:4860:4860::8888", Some("US"), Some("Cloudflare"));
+        let same = snapshot("2001:4860:4860::8888", Some("US"), Some("Cloudflare"));
+        let different = snapshot("2600:4040:abcd::1", Some("US"), Some("Cloudflare"));
+
+        assert_eq!(classify(Some(&previous), &same), None);
+        assert_eq!(
+            classify(Some(&previous), &different),
+            Some(ChangeReason::IpChanged)
+        );
+    }
+
+    #[test]
     fn isp_changed_same_country() {
         let previous = snapshot("1.1.1.1", Some("US"), Some("Cloudflare"));
         let current = snapshot("1.1.1.1", Some("US"), Some("Comcast"));
