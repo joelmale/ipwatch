@@ -159,69 +159,6 @@
           </table>
         </div>
       </section>
-
-      <section class="panel panel--settings">
-        <div class="panel__header">
-          <h2 class="panel__title">Settings</h2>
-        </div>
-
-        <div id="settings-error" class="settings-error" hidden></div>
-        <div id="settings-success" class="settings-success" hidden>Settings saved.</div>
-
-        <form id="settings-form" class="settings-form">
-          <div class="settings-field">
-            <label for="settings-poll-interval">Poll interval (seconds)</label>
-            <input
-              type="number"
-              id="settings-poll-interval"
-              name="poll-interval"
-              inputmode="numeric"
-              step="1"
-            />
-            <p class="settings-hint">
-              Applies immediately. Limited to 10 seconds&ndash;3600 seconds (1 hour); values
-              outside that range are corrected on save.
-            </p>
-          </div>
-
-          <div class="settings-field settings-field--checkbox">
-            <label>
-              <input type="checkbox" id="settings-notifications" />
-              Show notifications on IP/country changes
-            </label>
-          </div>
-
-          <div class="settings-field settings-field--checkbox">
-            <label>
-              <input type="checkbox" id="settings-launch-startup" />
-              Launch ipwatch at startup
-            </label>
-          </div>
-
-          <div class="settings-field">
-            <label for="settings-country-code">Expected country code</label>
-            <input
-              type="text"
-              id="settings-country-code"
-              name="country-code"
-              maxlength="2"
-              placeholder="e.g. US"
-              autocapitalize="characters"
-              autocomplete="off"
-              spellcheck="false"
-            />
-            <p class="settings-hint">
-              Optional. Drives the tray's amber &ldquo;country differs&rdquo; warning. Takes
-              effect on next restart, not immediately. Leave blank for no expectation.
-            </p>
-          </div>
-
-          <div class="settings-actions">
-            <button id="settings-save-btn" type="submit" disabled>Save</button>
-            <span id="settings-clamp-note" class="settings-clamp-note" hidden></span>
-          </div>
-        </form>
-      </section>
     </main>
   </body>
 </html>

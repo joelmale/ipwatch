@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ipwatch — Settings</title>
+    <script type="module" src="/src/settings.ts" defer></script>
+  </head>
+
+  <body>
+    <main class="settings-page">
+      <header class="settings-page__header">
+        <h1 class="settings-page__title">Settings</h1>
+      </header>
+
+      <div id="settings-error" class="settings-error" hidden></div>
+      <div id="settings-success" class="settings-success" hidden>Settings saved.</div>
+
+      <form id="settings-form" class="settings-form">
+        <div class="settings-field">
+          <label for="settings-poll-interval">Poll interval (seconds)</label>
+          <input
+            type="number"
+            id="settings-poll-interval"
+            name="poll-interval"
+            inputmode="numeric"
+            step="1"
+          />
+          <p class="settings-hint">
+            Applies immediately. Limited to 10 seconds&ndash;3600 seconds (1 hour); values
+            outside that range are corrected on save.
+          </p>
+        </div>
+
+        <div class="settings-field settings-field--checkbox">
+          <label>
+            <input type="checkbox" id="settings-notifications" />
+            Show notifications on IP/country changes
+          </label>
+        </div>
+
+        <div class="settings-field settings-field--checkbox">
+          <label>
+            <input type="checkbox" id="settings-launch-startup" />
+            Launch ipwatch at startup
+          </label>
+        </div>
+
+        <div class="settings-field">
+          <label for="settings-country-code">Expected country code</label>
+          <input
+            type="text"
+            id="settings-country-code"
+            name="country-code"
+            maxlength="2"
+            placeholder="e.g. US"
+            autocapitalize="characters"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <p class="settings-hint">
+            Optional. Drives the tray's amber &ldquo;country differs&rdquo; warning. Applied
+            immediately — the tray refreshes right away. Leave blank for no expectation.
+          </p>
+        </div>
+
+        <div class="settings-actions">
+          <button id="settings-save-btn" type="submit" disabled>Save</button>
+          <span id="settings-clamp-note" class="settings-clamp-note" hidden></span>
+        </div>
+      </form>
+    </main>
+  </body>
+</html>

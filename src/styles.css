@@ -611,11 +611,33 @@ button#refresh-btn:disabled {
 }
 
 /* ---------------------------------------------------------------------- */
-/* Settings panel                                                         */
+/* Settings page                                                          */
+/*                                                                         */
+/* This is its own standalone ~480x640 window (opened from the tray menu),
+   not a panel embedded in the details window — so unlike the other
+   `.panel*` sections it isn't wrapped in a bordered card; the page itself
+   fills that role. `.settings-form` stretches to take the remaining
+   height and pins its actions to the bottom, so the window reads as a
+   deliberately laid out page rather than a card floating in empty space. */
 /* ---------------------------------------------------------------------- */
 
-.panel--settings {
-  padding: 16px 18px 18px;
+.settings-page {
+  min-height: 100vh;
+  padding: 22px 24px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.settings-page__header {
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 14px;
+}
+
+.settings-page__title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
 }
 
 .settings-error {
@@ -644,9 +666,10 @@ button#refresh-btn:disabled {
 }
 
 .settings-form {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 22px;
 }
 
 .settings-field {
@@ -702,6 +725,8 @@ button#refresh-btn:disabled {
 }
 
 .settings-actions {
+  margin-top: auto;
+  padding-top: 8px;
   display: flex;
   align-items: center;
   gap: 12px;

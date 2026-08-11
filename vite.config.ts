@@ -1,3 +1,4 @@
+import { fileURLToPath, URL } from "node:url";
 import { defineConfig } from "vite";
 
 // @ts-expect-error process is a nodejs global
@@ -25,6 +26,18 @@ export default defineConfig(async () => ({
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
+    },
+  },
+  // Multi-page build: the details window (index.html) and the standalone
+  // settings window (settings.html, opened from the tray menu by the Rust
+  // side — see `src-tauri`) are separate HTML entry points that both need
+  // to land in `dist/`. Without this, Vite only emits `index.html`.
+  build: {
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL("./index.html", import.meta.url)),
+        settings: fileURLToPath(new URL("./settings.html", import.meta.url)),
+      },
     },
   },
 }));

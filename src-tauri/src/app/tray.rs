@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use tauri::image::Image;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, WindowEvent};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tokio::sync::broadcast;
 
 use crate::poller::{Poller, Snapshot};
@@ -24,6 +24,15 @@ const ICON_UNKNOWN: &[u8] = include_bytes!("../../icons/tray-unknown.png");
 /// The main window's label, per `tauri.conf.json` (unlabelled entries default
 /// to `"main"`).
 const MAIN_WINDOW_LABEL: &str = "main";
+
+/// The settings window's label. Shared contract with the frontend agent
+/// building `settings.html`/`src/settings.ts`: this label, together with the
+/// `settings.html` entry point below, must match exactly.
+const SETTINGS_WINDOW_LABEL: &str = "settings";
+
+/// Frontend entry point for the settings window, resolved relative to
+/// `frontendDist`. Shared contract — see `SETTINGS_WINDOW_LABEL`.
+const SETTINGS_WINDOW_URL: &str = "settings.html";
 
 /// Which of the four embedded icons the tray should currently show.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -273,9 +282,9 @@ pub fn init(
 
     let refresh_item = MenuItemBuilder::with_id("refresh", "Refresh").build(app)?;
     let details_item = MenuItemBuilder::with_id("details", "Details").build(app)?;
-    // The settings UI lives in the main window's Details panel — this just
-    // shows + focuses it, same as the "details" item and the tray left
-    // click, via the shared `show_details_window` helper.
+    // Opens the dedicated settings window (label "settings", entry point
+    // "settings.html") via `show_settings_window`, creating it on first use
+    // and reusing/focusing it thereafter.
     let settings_item = MenuItemBuilder::with_id("settings", "Settings").build(app)?;
     let quit_item = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
 
@@ -306,7 +315,7 @@ pub fn init(
                 });
             }
             "details" => show_details_window(app),
-            "settings" => show_details_window(app),
+            "settings" => show_settings_window(app),
             "quit" => app.exit(0),
             _ => {}
         })
@@ -352,6 +361,52 @@ fn show_details_window(app: &AppHandle) {
     }
     if let Err(err) = window.set_focus() {
         tracing::warn!(%err, "failed to focus main window");
+    }
+}
+
+/// Shows the settings window, creating it on first use and reusing/focusing
+/// it on every subsequent call — mirrors `show_details_window`'s
+/// show → unminimize → focus shape, plus the create-if-absent step
+/// `show_details_window` doesn't need because the main window always exists
+/// from startup.
+///
+/// Deliberately does not intercept this window's close button the way
+/// `wire_close_to_tray` does for `main`: Settings is a utility window, not
+/// the app's persistent surface, so closing it should really close it
+/// (dropping the webview and freeing the label). The next "Settings" click
+/// then takes the `None` branch below and rebuilds it from scratch — there is
+/// no stale handle left behind to make that second build fail.
+///
+/// Errors from window creation are logged, not propagated: a failed settings
+/// window must never take down the app or the tray (see this function's
+/// caller, the tray's `on_menu_event`, which is infallible).
+fn show_settings_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(SETTINGS_WINDOW_LABEL) {
+        if let Err(err) = window.unminimize() {
+            tracing::warn!(%err, "failed to unminimize settings window");
+        }
+        if let Err(err) = window.show() {
+            tracing::error!(%err, "failed to show settings window");
+            return;
+        }
+        if let Err(err) = window.set_focus() {
+            tracing::warn!(%err, "failed to focus settings window");
+        }
+        return;
+    }
+
+    let builder = WebviewWindowBuilder::new(
+        app,
+        SETTINGS_WINDOW_LABEL,
+        WebviewUrl::App(SETTINGS_WINDOW_URL.into()),
+    )
+    .title("ipwatch — Settings")
+    .inner_size(480.0, 640.0)
+    .resizable(true)
+    .center();
+
+    if let Err(err) = builder.build() {
+        tracing::error!(%err, "failed to create settings window");
     }
 }
 

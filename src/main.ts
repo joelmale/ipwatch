@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import { PLACEHOLDER, queryEl, setScopedMessage, text } from "./shared";
 
 // ---------------------------------------------------------------------------
 // Backend payload shapes. These mirror the Rust structs in
@@ -90,17 +91,6 @@ interface LeakReport {
   verdict: DnsLeakVerdict;
 }
 
-// This mirrors `src-tauri/src/settings/mod.rs::Settings` exactly. Field
-// names are snake_case to match serde's default (de)serialization — Tauri
-// does NOT rename struct fields, only command *arguments* get the
-// snake_case-to-camelCase treatment (see `set_settings` below).
-interface Settings {
-  poll_interval_secs: number;
-  notifications_enabled: boolean;
-  launch_at_startup: boolean;
-  expected_country_code: string | null;
-}
-
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -114,24 +104,6 @@ let hasLoadedOnce = false;
 let refreshWatchdog: ReturnType<typeof setTimeout> | null = null;
 /** True while a DNS leak test is in flight, so a stray double-click can't fire a second call. */
 let dnsLeakRunning = false;
-
-/** The settings baseline: the last value returned by `get_settings` or
- * `set_settings`. Dirty-checking compares the live form against this, never
- * against what was last typed — that's what lets the save button reflect
- * "does the form match what's actually persisted/applied" rather than
- * "has the user touched anything". `null` until the initial load resolves. */
-let currentSettings: Settings | null = null;
-/** True while a save is in flight, so a stray double-submit can't fire twice. */
-let settingsSaving = false;
-
-const PLACEHOLDER = "—";
-
-/** UI-only fallback used when the poll interval field can't be parsed as a
- * number at all (e.g. emptied). Mirrors `settings::DEFAULT_POLL_INTERVAL_SECS`
- * for display purposes only — the backend is the sole source of truth for
- * clamping and defaults; this just keeps the dirty-check from throwing NaN
- * around before the round trip corrects it. */
-const FALLBACK_POLL_INTERVAL_SECS = 60;
 
 /** How many rows to pull from `get_history`. This is a details window, not
  * a paged log — 50 is enough to see the recent pattern without the panel
@@ -220,24 +192,6 @@ let dnsLeakResolversWrap: HTMLElement;
 let dnsLeakResolversBody: HTMLElement;
 let dnsLeakResolversEmptyEl: HTMLElement;
 
-let settingsForm: HTMLFormElement;
-let settingsErrorEl: HTMLElement;
-let settingsSuccessEl: HTMLElement;
-let settingsPollIntervalInput: HTMLInputElement;
-let settingsNotificationsInput: HTMLInputElement;
-let settingsLaunchStartupInput: HTMLInputElement;
-let settingsCountryCodeInput: HTMLInputElement;
-let settingsSaveBtn: HTMLButtonElement;
-let settingsClampNoteEl: HTMLElement;
-
-function queryEl<T extends HTMLElement>(selector: string): T {
-  const el = document.querySelector<T>(selector);
-  if (!el) {
-    throw new Error(`ipwatch: expected element ${selector} to exist`);
-  }
-  return el;
-}
-
 function bindDom(): void {
   refreshBtn = queryEl("#refresh-btn");
   statusPill = queryEl("#status-pill");
@@ -279,25 +233,11 @@ function bindDom(): void {
   dnsLeakResolversWrap = queryEl("#dnsleak-resolvers-wrap");
   dnsLeakResolversBody = queryEl("#dnsleak-resolvers-body");
   dnsLeakResolversEmptyEl = queryEl("#dnsleak-resolvers-empty");
-
-  settingsForm = queryEl("#settings-form");
-  settingsErrorEl = queryEl("#settings-error");
-  settingsSuccessEl = queryEl("#settings-success");
-  settingsPollIntervalInput = queryEl("#settings-poll-interval");
-  settingsNotificationsInput = queryEl("#settings-notifications");
-  settingsLaunchStartupInput = queryEl("#settings-launch-startup");
-  settingsCountryCodeInput = queryEl("#settings-country-code");
-  settingsSaveBtn = queryEl("#settings-save-btn");
-  settingsClampNoteEl = queryEl("#settings-clamp-note");
 }
 
 // ---------------------------------------------------------------------------
 // Rendering helpers
 // ---------------------------------------------------------------------------
-
-function text(value: string | null | undefined): string {
-  return value === null || value === undefined || value === "" ? PLACEHOLDER : value;
-}
 
 function joinOrPlaceholder(values: string[]): string {
   return values.length > 0 ? values.join(", ") : PLACEHOLDER;
@@ -347,26 +287,14 @@ function formatEventCountry(ev: IpEvent): string {
 }
 
 function setErrorBanner(message: string | null): void {
-  if (message) {
-    errorBanner.textContent = message;
-    errorBanner.hidden = false;
-  } else {
-    errorBanner.hidden = true;
-    errorBanner.textContent = "";
-  }
+  setScopedMessage(errorBanner, message);
 }
 
 /** Scoped to the history panel so a DB hiccup there (the backend degrades
  * to "no history" rather than failing startup) never clobbers the
  * top-level error banner or the rest of the window. */
 function setHistoryError(message: string | null): void {
-  if (message) {
-    historyErrorEl.textContent = message;
-    historyErrorEl.hidden = false;
-  } else {
-    historyErrorEl.hidden = true;
-    historyErrorEl.textContent = "";
-  }
+  setScopedMessage(historyErrorEl, message);
 }
 
 function renderHistoryRows(events: IpEvent[]): void {
@@ -578,15 +506,8 @@ function onMapToggleClick(): void {
  * "a test is already running" rejection as a mild heads-up rather than an
  * alarming failure — it isn't one. */
 function setDnsLeakError(message: string | null, benign = false): void {
-  if (message) {
-    dnsLeakErrorEl.textContent = message;
-    dnsLeakErrorEl.hidden = false;
-    dnsLeakErrorEl.classList.toggle("dnsleak-error--benign", benign);
-  } else {
-    dnsLeakErrorEl.hidden = true;
-    dnsLeakErrorEl.textContent = "";
-    dnsLeakErrorEl.classList.remove("dnsleak-error--benign");
-  }
+  setScopedMessage(dnsLeakErrorEl, message);
+  dnsLeakErrorEl.classList.toggle("dnsleak-error--benign", !!message && benign);
 }
 
 const DNSLEAK_VERDICT_CLASSES = [
@@ -722,150 +643,6 @@ async function onDnsLeakRunClick(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Settings panel
-//
-// Explicit Save button, enabled only when the form differs from
-// `currentSettings` (the last value the backend actually confirmed via
-// `get_settings`/`set_settings`) — never save-on-change. Four fields with a
-// mix of immediate-effect and restart-only semantics is exactly the case
-// where silently firing a backend call per keystroke would make it unclear
-// what's live, so a single deliberate action with an unambiguous
-// enabled/disabled affordance was chosen instead. `set_settings` returns the
-// *effective* (post-clamp) settings, and the form is always re-rendered from
-// that response, never from what was typed — see `onSettingsFormSubmit`.
-// ---------------------------------------------------------------------------
-
-/** Scoped to this panel, like `setHistoryError`/`setDnsLeakError`. */
-function setSettingsError(message: string | null): void {
-  if (message) {
-    settingsErrorEl.textContent = message;
-    settingsErrorEl.hidden = false;
-  } else {
-    settingsErrorEl.hidden = true;
-    settingsErrorEl.textContent = "";
-  }
-}
-
-function setSettingsSuccess(show: boolean): void {
-  settingsSuccessEl.hidden = !show;
-}
-
-function hideSettingsClampNote(): void {
-  settingsClampNoteEl.hidden = true;
-  settingsClampNoteEl.textContent = "";
-}
-
-function showSettingsClampNote(requestedSecs: number, effectiveSecs: number): void {
-  settingsClampNoteEl.textContent =
-    `Poll interval adjusted to ${effectiveSecs}s — ${requestedSecs}s is outside the allowed ` +
-    "10s–3600s range.";
-  settingsClampNoteEl.hidden = false;
-}
-
-/** Renders the form from an authoritative `Settings` value (from
- * `get_settings` or `set_settings`'s response) and updates the dirty-check
- * baseline to match. Never call this with unconfirmed user input. */
-function renderSettingsForm(settings: Settings): void {
-  currentSettings = settings;
-  settingsPollIntervalInput.value = String(settings.poll_interval_secs);
-  settingsNotificationsInput.checked = settings.notifications_enabled;
-  settingsLaunchStartupInput.checked = settings.launch_at_startup;
-  settingsCountryCodeInput.value = settings.expected_country_code ?? "";
-  updateSettingsSaveButton();
-}
-
-/** Reads the live form into a `Settings`-shaped payload. This is a *request*,
- * not a fact — the backend clamps `poll_interval_secs` and is the only
- * source of truth for what actually took effect. */
-function readSettingsForm(): Settings {
-  const rawInterval = Number(settingsPollIntervalInput.value);
-  const pollIntervalSecs = Number.isFinite(rawInterval)
-    ? Math.trunc(rawInterval)
-    : (currentSettings?.poll_interval_secs ?? FALLBACK_POLL_INTERVAL_SECS);
-
-  const countryCode = settingsCountryCodeInput.value.trim().toUpperCase();
-
-  return {
-    poll_interval_secs: pollIntervalSecs,
-    notifications_enabled: settingsNotificationsInput.checked,
-    launch_at_startup: settingsLaunchStartupInput.checked,
-    // Empty means "no expectation" — must be `null`, not `""`, to match the
-    // backend's `Option<String>` contract.
-    expected_country_code: countryCode === "" ? null : countryCode,
-  };
-}
-
-function settingsEqual(a: Settings, b: Settings): boolean {
-  return (
-    a.poll_interval_secs === b.poll_interval_secs &&
-    a.notifications_enabled === b.notifications_enabled &&
-    a.launch_at_startup === b.launch_at_startup &&
-    a.expected_country_code === b.expected_country_code
-  );
-}
-
-function isSettingsFormDirty(): boolean {
-  return currentSettings !== null && !settingsEqual(readSettingsForm(), currentSettings);
-}
-
-function updateSettingsSaveButton(): void {
-  settingsSaveBtn.disabled = settingsSaving || !isSettingsFormDirty();
-}
-
-/** Bound to `input`/`change` on every settings field. Saved confirmation and
- * the clamp note both describe a *specific* past save — the moment the form
- * changes again they no longer describe the live form, so both clear here
- * rather than lingering next to edits they no longer apply to. */
-function onSettingsFieldChange(): void {
-  setSettingsSuccess(false);
-  hideSettingsClampNote();
-  updateSettingsSaveButton();
-}
-
-async function onSettingsFormSubmit(event: SubmitEvent): Promise<void> {
-  event.preventDefault();
-  if (settingsSaving) {
-    return;
-  }
-
-  const payload = readSettingsForm();
-
-  settingsSaving = true;
-  settingsSaveBtn.disabled = true;
-  settingsSaveBtn.textContent = "Saving…";
-  setSettingsError(null);
-  setSettingsSuccess(false);
-  hideSettingsClampNote();
-
-  try {
-    const effective = await invoke<Settings>("set_settings", { newSettings: payload });
-    renderSettingsForm(effective);
-    setSettingsSuccess(true);
-    if (effective.poll_interval_secs !== payload.poll_interval_secs) {
-      showSettingsClampNote(payload.poll_interval_secs, effective.poll_interval_secs);
-    }
-  } catch (err) {
-    // Deliberately do not re-render the form here: the user's edits stay in
-    // place so a failed save doesn't also cost them their input.
-    setSettingsError(`Could not save settings: ${String(err)}`);
-  } finally {
-    settingsSaving = false;
-    settingsSaveBtn.textContent = "Save";
-    updateSettingsSaveButton();
-  }
-}
-
-async function loadSettings(): Promise<void> {
-  try {
-    const settings = await invoke<Settings>("get_settings");
-    setSettingsError(null);
-    renderSettingsForm(settings);
-  } catch (err) {
-    setSettingsError(`Could not load settings: ${String(err)}`);
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Backend calls
 // ---------------------------------------------------------------------------
 
@@ -992,21 +769,9 @@ window.addEventListener("DOMContentLoaded", () => {
   mapToggleBtn.addEventListener("click", onMapToggleClick);
   dnsLeakRunBtn.addEventListener("click", () => void onDnsLeakRunClick());
 
-  settingsForm.addEventListener("submit", (event) => void onSettingsFormSubmit(event));
-  for (const input of [
-    settingsPollIntervalInput,
-    settingsNotificationsInput,
-    settingsLaunchStartupInput,
-    settingsCountryCodeInput,
-  ]) {
-    input.addEventListener("input", onSettingsFieldChange);
-    input.addEventListener("change", onSettingsFieldChange);
-  }
-
   void (async () => {
     await registerListeners();
     await loadDetails();
     await loadHistory();
-    await loadSettings();
   })();
 });
