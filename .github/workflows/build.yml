@@ -1,0 +1,91 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# A newer push to the same branch makes an in-flight run redundant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Don't cancel the other platforms when one fails — the whole point of
+      # this matrix is finding out which platforms break, and a Linux-only
+      # failure should not hide a macOS one.
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows
+          - os: macos-latest
+            name: macos
+          - os: ubuntu-latest
+            name: linux
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tauri on Linux builds against the system WebKitGTK rather than
+      # shipping its own engine. libayatana-appindicator is what backs the
+      # tray icon there; without it the tray silently does not appear.
+      - name: Install Linux system dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            patchelf \
+            build-essential \
+            file \
+            wget
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Keyed per-platform: target/ artifacts are not portable across OSes.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.name }}
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Run backend tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      # The real cross-platform gate. The unix DNS-resolver path in `netinfo`
+      # is cfg-gated and therefore never compiled on the Windows dev machine,
+      # so this is the first thing that type-checks it at all.
+      - name: Build application and installers
+        run: npm run tauri build
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipwatch-${{ matrix.name }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            src-tauri/target/release/bundle/**/*.exe
+            src-tauri/target/release/bundle/**/*.msi
+            src-tauri/target/release/bundle/**/*.dmg
+            src-tauri/target/release/bundle/**/*.deb
+            src-tauri/target/release/bundle/**/*.rpm
+            src-tauri/target/release/bundle/**/*.AppImage
