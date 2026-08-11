@@ -10,12 +10,17 @@ pub mod dnsleak;
 pub mod netinfo;
 pub mod poller;
 pub mod providers;
+pub mod settings;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_notification::init());
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ));
     let builder = app::tiles::register(builder);
     builder
         .setup(app::setup)
@@ -23,7 +28,9 @@ pub fn run() {
             app::get_details,
             app::refresh,
             app::get_history,
-            app::run_dns_leak_test
+            app::run_dns_leak_test,
+            app::get_settings,
+            app::set_settings
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

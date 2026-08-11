@@ -46,22 +46,33 @@ impl IconKind {
     }
 }
 
-/// Tracks the "expected" country for this run of the app and latches the
-/// warn state the first time an observation disagrees with it.
+/// Tracks the baseline country for this run of the app and latches the warn
+/// state the first time an observation disagrees with it.
 ///
-/// NOTE: a real "expected country" is a persisted user setting, which is
-/// Phase 4 work. Until then this treats the first country code observed
-/// after launch as the baseline. Once latched, warn stays latched for the
-/// rest of the session even if the country reverts — same logic as the
-/// poller's own `offline` flag: a session-scoped signal, not a persisted one.
+/// Two baseline modes (PLAN.md Phase 4):
+/// - `expected` is `Some`: the persisted `expected_country_code` setting is
+///   the baseline from the very first observation. This is the "verify my
+///   VPN's exit country stays X" case.
+/// - `expected` is `None`: falls back to the pre-Phase-4 behaviour — the
+///   first country code observed after launch becomes the baseline.
+///
+/// Either way, once latched, warn stays latched for the rest of the session
+/// even if the country reverts to matching the baseline — same reasoning as
+/// the poller's own `offline` flag: a transient drop is exactly the event
+/// this exists to surface, and un-latching on a later match would let a
+/// blink-and-you-miss-it drop go unreported if the user wasn't watching the
+/// tray at that exact moment. A session-scoped signal, not a persisted one —
+/// restarting the app always starts fresh.
 struct SessionBaseline {
+    expected: Option<String>,
     country_code: Option<String>,
     warn_latched: bool,
 }
 
 impl SessionBaseline {
-    fn new() -> Self {
+    fn new(expected: Option<String>) -> Self {
         Self {
+            expected,
             country_code: None,
             warn_latched: false,
         }
@@ -70,13 +81,23 @@ impl SessionBaseline {
     /// Feeds one observed country code (`None` if the provider didn't report
     /// one this tick) and returns whether warn is latched afterward.
     fn observe(&mut self, country_code: Option<&str>) -> bool {
-        if let Some(cc) = country_code {
-            match self.country_code.as_deref() {
+        let Some(cc) = country_code else {
+            return self.warn_latched;
+        };
+
+        match &self.expected {
+            Some(expected) => {
+                if expected != cc {
+                    self.warn_latched = true;
+                }
+            }
+            None => match self.country_code.as_deref() {
                 None => self.country_code = Some(cc.to_string()),
                 Some(baseline) if baseline != cc => self.warn_latched = true,
                 _ => {}
-            }
+            },
         }
+
         self.warn_latched
     }
 }
@@ -131,16 +152,23 @@ impl TrayIcons {
 /// close-to-tray behaviour, sets the initial icon/tooltip from
 /// `poller.current()`, and spawns the task that keeps both live. Called once
 /// from `app::setup`.
-pub fn init(app: &tauri::App, poller: Arc<Poller>) -> tauri::Result<()> {
+///
+/// `expected_country_code` is the persisted Phase 4 setting, read once at
+/// startup and handed to the `SessionBaseline` this call spawns — see that
+/// type's doc comment for the two baseline modes.
+pub fn init(
+    app: &tauri::App,
+    poller: Arc<Poller>,
+    expected_country_code: Option<String>,
+) -> tauri::Result<()> {
     let icons = TrayIcons::load()?;
 
     let refresh_item = MenuItemBuilder::with_id("refresh", "Refresh").build(app)?;
     let details_item = MenuItemBuilder::with_id("details", "Details").build(app)?;
-    // No settings window exists until Phase 4. Disabled (not omitted) so
-    // this reads as "not yet" rather than a dead/broken menu item.
-    let settings_item = MenuItemBuilder::with_id("settings", "Settings")
-        .enabled(false)
-        .build(app)?;
+    // The settings UI lives in the main window's Details panel — this just
+    // shows + focuses it, same as the "details" item and the tray left
+    // click, via the shared `show_details_window` helper.
+    let settings_item = MenuItemBuilder::with_id("settings", "Settings").build(app)?;
     let quit_item = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
 
     let menu = MenuBuilder::new(app)
@@ -170,6 +198,7 @@ pub fn init(app: &tauri::App, poller: Arc<Poller>) -> tauri::Result<()> {
                 });
             }
             "details" => show_details_window(app),
+            "settings" => show_details_window(app),
             "quit" => app.exit(0),
             _ => {}
         })
@@ -186,7 +215,7 @@ pub fn init(app: &tauri::App, poller: Arc<Poller>) -> tauri::Result<()> {
         .build(app)?;
 
     wire_close_to_tray(app);
-    spawn_live_updates(poller, tray, icons);
+    spawn_live_updates(poller, tray, icons, expected_country_code);
 
     Ok(())
 }
@@ -247,9 +276,14 @@ fn wire_close_to_tray(app: &tauri::App) {
 /// itself wake this loop to clear a stale "(offline)" tooltip — the tray
 /// only reacts to published `Change`s, the same constraint the frontend's
 /// `ip-changed` bridge has.
-fn spawn_live_updates(poller: Arc<Poller>, tray: TrayIcon, icons: TrayIcons) {
+fn spawn_live_updates(
+    poller: Arc<Poller>,
+    tray: TrayIcon,
+    icons: TrayIcons,
+    expected_country_code: Option<String>,
+) {
     tauri::async_runtime::spawn(async move {
-        let mut baseline = SessionBaseline::new();
+        let mut baseline = SessionBaseline::new(expected_country_code);
         let mut rx = poller.subscribe();
 
         let initial = poller.current().await;
@@ -341,31 +375,31 @@ mod tests {
         assert_eq!(IconKind::select(true, false), IconKind::Ok);
     }
 
-    // --- SessionBaseline::observe ---
+    // --- SessionBaseline::observe (no expected_country_code: session-first-country fallback) ---
 
     #[test]
     fn first_country_seen_becomes_baseline_without_latching() {
-        let mut baseline = SessionBaseline::new();
+        let mut baseline = SessionBaseline::new(None);
         assert!(!baseline.observe(Some("US")));
     }
 
     #[test]
     fn matching_baseline_does_not_latch() {
-        let mut baseline = SessionBaseline::new();
+        let mut baseline = SessionBaseline::new(None);
         baseline.observe(Some("US"));
         assert!(!baseline.observe(Some("US")));
     }
 
     #[test]
     fn diverging_country_latches_warn() {
-        let mut baseline = SessionBaseline::new();
+        let mut baseline = SessionBaseline::new(None);
         baseline.observe(Some("US"));
         assert!(baseline.observe(Some("FR")));
     }
 
     #[test]
     fn warn_stays_latched_even_if_country_reverts() {
-        let mut baseline = SessionBaseline::new();
+        let mut baseline = SessionBaseline::new(None);
         baseline.observe(Some("US"));
         assert!(baseline.observe(Some("FR")));
         assert!(baseline.observe(Some("US")));
@@ -373,12 +407,42 @@ mod tests {
 
     #[test]
     fn missing_country_code_neither_sets_baseline_nor_latches() {
-        let mut baseline = SessionBaseline::new();
+        let mut baseline = SessionBaseline::new(None);
         assert!(!baseline.observe(None));
         // Still unset, so the next real observation becomes the baseline
         // rather than being compared against nothing.
         assert!(!baseline.observe(Some("US")));
         assert!(!baseline.observe(Some("US")));
+    }
+
+    // --- SessionBaseline::observe (expected_country_code set: Phase 4) ---
+
+    #[test]
+    fn matching_expected_country_does_not_latch() {
+        let mut baseline = SessionBaseline::new(Some("US".to_string()));
+        assert!(!baseline.observe(Some("US")));
+    }
+
+    #[test]
+    fn diverging_from_expected_country_latches_immediately() {
+        // Unlike the fallback mode, the very first observation can latch —
+        // there's no "first one sets the baseline" step when a baseline was
+        // already given.
+        let mut baseline = SessionBaseline::new(Some("US".to_string()));
+        assert!(baseline.observe(Some("FR")));
+    }
+
+    #[test]
+    fn expected_country_warn_stays_latched_even_if_it_reverts() {
+        let mut baseline = SessionBaseline::new(Some("US".to_string()));
+        assert!(baseline.observe(Some("FR")));
+        assert!(baseline.observe(Some("US")));
+    }
+
+    #[test]
+    fn missing_country_code_does_not_latch_against_an_expected_baseline() {
+        let mut baseline = SessionBaseline::new(Some("US".to_string()));
+        assert!(!baseline.observe(None));
     }
 
     // --- format_tooltip ---

@@ -6,10 +6,12 @@
 //! only place that knows about `tauri::App`/`AppHandle`.
 
 use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Duration;
 
 use reqwest::Client;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_autostart::ManagerExt;
 use tokio::sync::{broadcast, Mutex as AsyncMutex};
 
 use crate::db::{ChangeReason, Db, IpEvent};
@@ -17,6 +19,7 @@ use crate::dnsleak::{self, BashWs, LeakReport};
 use crate::netinfo::{self, NetInfo};
 use crate::poller::{Change, Poller, Snapshot};
 use crate::providers::{default_geo_chain, default_ip_chain, http_client, GeoInfo};
+use crate::settings::{self, Settings};
 
 pub mod notify;
 pub mod tiles;
@@ -31,6 +34,12 @@ pub mod tray;
 /// call, contention is nil at a 60s poll interval, and no code path holds the
 /// guard across an `.await`.
 pub type SharedDb = Arc<StdMutex<Option<Db>>>;
+
+/// `Settings` is plain data (no non-`Sync` handle inside, unlike `Db`), so it
+/// needs no `Option` wrapper the way `SharedDb` does — `open_settings` always
+/// produces a usable value, falling back to `Settings::default()` rather than
+/// `None` on any failure (see `settings::load`).
+pub type SharedSettings = Arc<StdMutex<Settings>>;
 
 /// Guards `run_dns_leak_test` against overlapping invocations.
 ///
@@ -61,11 +70,35 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let shared_db: SharedDb = Arc::new(StdMutex::new(db));
     app.manage(shared_db.clone());
 
+    // Loaded (and, if necessary, defaulted/clamped — see `settings::load`)
+    // before the poller is built, so the very first `Poller` the app
+    // constructs already reflects a persisted poll interval instead of
+    // always starting at `DEFAULT_INTERVAL` and needing a follow-up
+    // `set_interval` call.
+    let settings = open_settings(&handle);
+    let initial_interval = Duration::from_secs(settings.poll_interval_secs);
+    let expected_country_code = settings.expected_country_code.clone();
+    let launch_at_startup = settings.launch_at_startup;
+    let shared_settings: SharedSettings = Arc::new(StdMutex::new(settings));
+    app.manage(shared_settings.clone());
+
+    // Applied every startup, not just when the setting changes from the UI —
+    // otherwise the OS's actual registered-at-login state and the setting
+    // the user sees could silently diverge (e.g. after a manual uninstall/
+    // reinstall of the autostart entry, or a settings.json restored from
+    // backup).
+    apply_autostart(&handle, launch_at_startup);
+
     let client = http_client().unwrap_or_else(|err| {
         tracing::error!(%err, "failed to build the configured http client; falling back to a default reqwest client");
         Client::new()
     });
-    let poller = Arc::new(Poller::new(default_ip_chain(), default_geo_chain(), client));
+    let poller = Arc::new(Poller::with_interval(
+        default_ip_chain(),
+        default_geo_chain(),
+        client,
+        initial_interval,
+    ));
     app.manage(poller.clone());
 
     let dns_leak_guard: DnsLeakGuard = Arc::new(AsyncMutex::new(()));
@@ -90,9 +123,9 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         poll_handle.run().await;
     });
 
-    tray::init(app, poller.clone())?;
+    tray::init(app, poller.clone(), expected_country_code)?;
 
-    spawn_event_bridge(handle, poller, shared_db);
+    spawn_event_bridge(handle, poller, shared_db, shared_settings);
 
     Ok(())
 }
@@ -182,6 +215,57 @@ fn open_db(handle: &AppHandle) -> Option<Db> {
     }
 }
 
+/// Resolves where `settings.json` lives (`app_data_dir()/settings.json`),
+/// creating the directory if this is a fresh install. `None` only when the
+/// app data dir itself can't be resolved or created — logged, and treated by
+/// every caller the same way `open_db` treats a database it couldn't open:
+/// degrade, don't fail startup.
+fn settings_file_path(handle: &AppHandle) -> Option<std::path::PathBuf> {
+    let app_data_dir = match handle.path().app_data_dir() {
+        Ok(dir) => dir,
+        Err(err) => {
+            tracing::error!(%err, "could not resolve app data dir; settings will not persist this session");
+            return None;
+        }
+    };
+
+    if let Err(err) = std::fs::create_dir_all(&app_data_dir) {
+        tracing::error!(
+            %err,
+            dir = %app_data_dir.display(),
+            "could not create app data dir; settings will not persist this session"
+        );
+        return None;
+    }
+
+    Some(app_data_dir.join("settings.json"))
+}
+
+/// Loads settings for this session, falling back to `Settings::default()`
+/// (never failing startup) both when `settings_file_path` can't resolve a
+/// path and — inside `settings::load` itself — when the file is missing,
+/// unreadable, or corrupt. See the `settings` module doc comment for why
+/// this is a plain JSON file rather than `tauri-plugin-store`.
+fn open_settings(handle: &AppHandle) -> Settings {
+    match settings_file_path(handle) {
+        Some(path) => settings::load(path),
+        None => Settings::default(),
+    }
+}
+
+/// Enables or disables the OS "launch at startup" registration to match
+/// `enabled`. Failures are logged, not propagated — the same policy as every
+/// other best-effort side effect in this module (tray/notification updates):
+/// a platform quirk here must not be able to take down setup or a
+/// `set_settings` call.
+fn apply_autostart(app: &AppHandle, enabled: bool) {
+    let manager = app.autolaunch();
+    let result = if enabled { manager.enable() } else { manager.disable() };
+    if let Err(err) = result {
+        tracing::error!(%err, enabled, "failed to apply launch-at-startup setting");
+    }
+}
+
 /// Subscribes to `poller.subscribe()` and, for each `Change`: persists a row
 /// (when warranted, see `persist_if_warranted`) and emits `ip-changed` to the
 /// frontend.
@@ -194,7 +278,7 @@ fn open_db(handle: &AppHandle) -> Option<Db> {
 /// Runs for the lifetime of the app. A lagged receiver logs and keeps going —
 /// exiting on `Lagged` would silently stop all UI updates for the rest of the
 /// session, which is worse than missing a few intermediate change events.
-fn spawn_event_bridge(app: AppHandle, poller: Arc<Poller>, db: SharedDb) {
+fn spawn_event_bridge(app: AppHandle, poller: Arc<Poller>, db: SharedDb, settings: SharedSettings) {
     tauri::async_runtime::spawn(async move {
         let mut rx = poller.subscribe();
         loop {
@@ -204,9 +288,15 @@ fn spawn_event_bridge(app: AppHandle, poller: Arc<Poller>, db: SharedDb) {
                     if let Err(err) = app.emit("ip-changed", &change) {
                         tracing::error!(%err, "failed to emit ip-changed event");
                     }
+                    // The on/off toggle is gated here at the call site, not
+                    // inside `notify::should_notify` — that function stays a
+                    // pure, settings-free predicate over `ChangeReason` alone,
+                    // so it's trivially unit-testable without any Tauri state.
                     // Never allowed to affect monitoring: notify::notify_change
                     // logs and swallows its own errors internally.
-                    notify::notify_change(&app, &change);
+                    if notifications_enabled(&settings) {
+                        notify::notify_change(&app, &change);
+                    }
                 }
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                     tracing::warn!(
@@ -224,6 +314,18 @@ fn spawn_event_bridge(app: AppHandle, poller: Arc<Poller>, db: SharedDb) {
             }
         }
     });
+}
+
+/// Reads the current `notifications_enabled` flag out of `SharedSettings`.
+/// A poisoned lock (only possible if some other holder panicked while
+/// holding it) still yields a usable value rather than propagating — a
+/// stuck notification gate must never be able to stall the event bridge.
+fn notifications_enabled(settings: &SharedSettings) -> bool {
+    let guard = match settings.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    guard.notifications_enabled
 }
 
 /// Decides whether a `Change` is worth a row in `ip_events`.
@@ -348,4 +450,62 @@ pub async fn run_dns_leak_test(
     dnsleak::run_test(&service, &client, expected_asn.as_deref())
         .await
         .map_err(|err| err.to_string())
+}
+
+/// Returns the currently effective settings (PLAN.md Phase 4).
+#[tauri::command]
+pub fn get_settings(settings: State<'_, SharedSettings>) -> Result<Settings, String> {
+    let guard = match settings.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    Ok(guard.clone())
+}
+
+/// Validates/clamps `new_settings`, persists them, applies their side
+/// effects to the running session (poll interval, autostart registration),
+/// and returns the settings as actually applied.
+///
+/// Returning the *effective* settings (not just echoing the input back) is
+/// deliberate: the caller may have sent an out-of-range `poll_interval_secs`
+/// (a stray keystroke, a bug, or just the clamp differing from what the UI
+/// let the user type), and the frontend should reflect what's actually
+/// running, not what it optimistically asked for.
+///
+/// A failed write to `settings.json` is logged, not returned as an error —
+/// the in-memory state and running side effects are updated regardless
+/// (the setting is applied for the rest of this session even if it won't
+/// survive a restart), mirroring how a failed history write in
+/// `persist_if_warranted` doesn't stop monitoring either.
+#[tauri::command]
+pub fn set_settings(
+    app: AppHandle,
+    new_settings: Settings,
+    settings: State<'_, SharedSettings>,
+    poller: State<'_, Arc<Poller>>,
+) -> Result<Settings, String> {
+    let mut effective = new_settings;
+    effective.clamp();
+
+    {
+        let mut guard = match settings.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *guard = effective.clone();
+    }
+
+    match settings_file_path(&app) {
+        Some(path) => {
+            if let Err(err) = settings::save(&path, &effective) {
+                tracing::error!(%err, path = %path.display(), "failed to persist settings");
+            }
+        }
+        None => tracing::warn!("no app data dir available; settings applied for this session only"),
+    }
+
+    poller.set_interval(Duration::from_secs(effective.poll_interval_secs));
+    apply_autostart(&app, effective.launch_at_startup);
+
+    Ok(effective)
 }

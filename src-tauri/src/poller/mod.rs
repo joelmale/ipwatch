@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, watch, RwLock};
 use tokio::task::JoinHandle;
 
 use crate::db::ChangeReason;
@@ -82,7 +82,10 @@ pub struct Poller {
     ip_chain: Chain<dyn IpProvider>,
     geo_chain: Chain<dyn GeoProvider>,
     client: Client,
-    interval: Duration,
+    /// Held in a `watch` channel rather than a plain field so `run()` can
+    /// react to a change immediately (see `run`'s `tokio::select!`) instead
+    /// of only picking up a new value the next time it happens to read it.
+    interval_tx: watch::Sender<Duration>,
     state: Arc<RwLock<Option<Snapshot>>>,
     /// Tracks whether the *last* tick failed, so a run of failures only
     /// publishes `Offline` once, on the transition into that state.
@@ -104,20 +107,37 @@ impl Poller {
         interval: Duration,
     ) -> Self {
         let (tx, _rx) = broadcast::channel(CHANGE_CHANNEL_CAPACITY);
+        let (interval_tx, _interval_rx) = watch::channel(interval);
         Self {
             ip_chain,
             geo_chain,
             client,
-            interval,
+            interval_tx,
             state: Arc::new(RwLock::new(None)),
             offline: Arc::new(RwLock::new(false)),
             tx,
         }
     }
 
-    /// The configured poll interval.
+    /// The currently configured poll interval.
     pub fn interval(&self) -> Duration {
-        self.interval
+        *self.interval_tx.borrow()
+    }
+
+    /// Updates the poll interval, taking effect immediately rather than only
+    /// after the current tick's (possibly up to an hour long) sleep elapses —
+    /// see `run`'s `tokio::select!` for how the new value preempts the old
+    /// countdown.
+    ///
+    /// Deliberately Tauri-free: this takes a plain `Duration`, not a
+    /// `Settings`. Validating/clamping a user-supplied value is the caller's
+    /// job (see `settings::clamp_poll_interval_secs`), not the poller's — the
+    /// poller should not need to learn what "settings" even are.
+    pub fn set_interval(&self, interval: Duration) {
+        // `send_replace` (unlike `send`) succeeds even if `run()` hasn't
+        // started yet and no receiver has subscribed, so this is safe to
+        // call at any point in the poller's lifetime.
+        self.interval_tx.send_replace(interval);
     }
 
     /// Subscribes to published changes. Each subscriber gets its own queue.
@@ -258,12 +278,37 @@ impl Poller {
     /// it already has. Tauri's `setup` runs on the main thread with no ambient
     /// Tokio runtime, where `tokio::spawn` panics outright — such callers
     /// should drive this directly instead.
+    ///
+    /// `tokio::select!`s between the regular tick and the interval `watch`
+    /// channel changing, rather than just reading `interval_tx`'s value fresh
+    /// on every tick. That distinction matters: with a 1-hour interval, a
+    /// settings change to (say) 10s must not sit ignored until the current
+    /// hour-long sleep finishes — `interval_rx.changed()` wakes the loop
+    /// immediately and reschedules the ticker from *now*, so the new interval
+    /// governs the very next tick rather than the one after.
     pub async fn run(self: Arc<Self>) {
-        let mut ticker = tokio::time::interval(self.interval);
+        let mut interval_rx = self.interval_tx.subscribe();
+        let mut ticker = tokio::time::interval(*interval_rx.borrow());
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
         loop {
-            ticker.tick().await;
-            self.refresh_once().await;
+            tokio::select! {
+                _ = ticker.tick() => {
+                    self.refresh_once().await;
+                }
+                Ok(()) = interval_rx.changed() => {
+                    let new_interval = *interval_rx.borrow();
+                    // `interval_at` (not `interval`) so the next tick lands
+                    // exactly `new_interval` from *now*, rather than firing
+                    // immediately the way a freshly built `tokio::time::interval`
+                    // always does on its first `.tick()`.
+                    ticker = tokio::time::interval_at(
+                        tokio::time::Instant::now() + new_interval,
+                        new_interval,
+                    );
+                    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                }
+            }
         }
     }
 
@@ -485,5 +530,107 @@ mod tests {
             Some("Manassas"),
             "the fuller live snapshot must replace the partial seeded one"
         );
+    }
+
+    // --- live-updatable interval (PLAN.md Phase 4) ---
+
+    #[test]
+    fn interval_reports_the_constructor_value() {
+        let poller = Poller::with_interval(
+            Chain::new(Vec::new()),
+            Chain::new(Vec::new()),
+            crate::providers::http_client().expect("client builds without network access"),
+            Duration::from_secs(45),
+        );
+        assert_eq!(poller.interval(), Duration::from_secs(45));
+    }
+
+    #[test]
+    fn set_interval_updates_the_observable_value() {
+        let poller = idle_poller();
+        assert_eq!(poller.interval(), Duration::from_secs(60));
+
+        poller.set_interval(Duration::from_secs(5));
+
+        assert_eq!(poller.interval(), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn set_interval_before_run_starts_does_not_panic() {
+        // `send_replace` must not require a live receiver — `run()` may not
+        // have subscribed yet (or may never be called at all, e.g. in a unit
+        // test like this one).
+        let poller = idle_poller();
+        poller.set_interval(Duration::from_secs(30));
+        assert_eq!(poller.interval(), Duration::from_secs(30));
+    }
+
+    /// A provider that returns a fresh IP on every call, so every successful
+    /// tick classifies as `IpChanged` and is guaranteed to publish a `Change`
+    /// — a simple, deterministic way to count ticks via the broadcast
+    /// channel in the test below.
+    struct SequentialIpProvider(std::sync::atomic::AtomicU32);
+
+    #[async_trait]
+    impl IpProvider for SequentialIpProvider {
+        fn name(&self) -> &'static str {
+            "sequential-test-provider"
+        }
+
+        async fn fetch_ip(&self, _client: &Client) -> Result<IpAddr, ProviderError> {
+            let n = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(IpAddr::from([10, 0, (n >> 8) as u8, n as u8]))
+        }
+    }
+
+    /// Proves the "immediately" half of `set_interval`'s contract: a change
+    /// reschedules the next tick from *now*, rather than sitting ignored
+    /// until the previous (here, one-hour) sleep finishes.
+    ///
+    /// Uses a paused/auto-advancing clock (`start_paused = true`) so the test
+    /// doesn't burn a real hour: with a paused clock, Tokio jumps straight to
+    /// the earliest pending timer whenever the runtime has nothing else to
+    /// do. If `run()` merely re-read a plain field on each tick instead of
+    /// reacting to the `watch` channel, the earliest pending timer would
+    /// still be the original ~3600s tick, the inner `timeout` below (30
+    /// simulated seconds) would win the race, and the test would fail.
+    #[tokio::test(start_paused = true)]
+    async fn set_interval_takes_effect_before_the_old_interval_elapses() {
+        let ip_chain: Chain<dyn IpProvider> = Chain::new(vec![Box::new(SequentialIpProvider(
+            std::sync::atomic::AtomicU32::new(1),
+        )) as Box<dyn IpProvider>]);
+        let geo_chain: Chain<dyn GeoProvider> = Chain::new(Vec::new());
+        let client = crate::providers::http_client().expect("client builds without network access");
+        let poller = Arc::new(Poller::with_interval(
+            ip_chain,
+            geo_chain,
+            client,
+            Duration::from_secs(3600),
+        ));
+
+        let mut changes = poller.subscribe();
+        let run_handle = tokio::spawn(poller.clone().run());
+
+        // `tokio::time::interval`'s first tick always fires immediately, so
+        // the first (Initial) change arrives without any time advance.
+        let first = changes.recv().await.expect("first change");
+        assert_eq!(first.reason, ChangeReason::Initial);
+
+        let before = tokio::time::Instant::now();
+        poller.set_interval(Duration::from_secs(5));
+
+        let second = tokio::time::timeout(Duration::from_secs(30), changes.recv())
+            .await
+            .expect("second change must arrive without waiting out the old 3600s interval")
+            .expect("second change");
+        assert_eq!(second.reason, ChangeReason::IpChanged);
+
+        let elapsed = tokio::time::Instant::now() - before;
+        assert!(
+            elapsed <= Duration::from_secs(6),
+            "expected the rescheduled 5s interval to govern the next tick, got {elapsed:?} of simulated time"
+        );
+
+        run_handle.abort();
     }
 }
