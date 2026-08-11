@@ -276,7 +276,11 @@ fn apply_autostart(app: &AppHandle, enabled: bool) {
         }
     }
 
-    let result = if enabled { manager.enable() } else { manager.disable() };
+    let result = if enabled {
+        manager.enable()
+    } else {
+        manager.disable()
+    };
     if let Err(err) = result {
         tracing::error!(%err, enabled, "failed to apply launch-at-startup setting");
     }

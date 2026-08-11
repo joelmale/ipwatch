@@ -40,11 +40,16 @@ pub fn apply(conn: &mut Connection) -> Result<(), DbError> {
 
     for (version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v > from) {
         let tx = conn.transaction()?;
-        tx.execute_batch(sql)
-            .map_err(|e| DbError::Migration { version: *version, detail: e.to_string() })?;
+        tx.execute_batch(sql).map_err(|e| DbError::Migration {
+            version: *version,
+            detail: e.to_string(),
+        })?;
         // PRAGMA does not accept bound parameters.
         tx.execute_batch(&format!("PRAGMA user_version = {version}"))
-            .map_err(|e| DbError::Migration { version: *version, detail: e.to_string() })?;
+            .map_err(|e| DbError::Migration {
+                version: *version,
+                detail: e.to_string(),
+            })?;
         tx.commit()?;
     }
 

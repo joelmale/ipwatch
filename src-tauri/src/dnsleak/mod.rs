@@ -185,9 +185,12 @@ pub async fn run_test(
 ) -> Result<LeakReport, DnsLeakError> {
     let session = service.new_session();
 
-    if tokio::time::timeout(DNS_PHASE_TIMEOUT, resolve_probe_hostnames(&session.hostnames))
-        .await
-        .is_err()
+    if tokio::time::timeout(
+        DNS_PHASE_TIMEOUT,
+        resolve_probe_hostnames(&session.hostnames),
+    )
+    .await
+    .is_err()
     {
         tracing::warn!(
             service = service.name(),
@@ -224,7 +227,9 @@ pub async fn run_test(
 /// entire point, not getting an address back.
 async fn resolve_probe_hostnames(hostnames: &[String]) {
     let mut set = tokio::task::JoinSet::new();
-    for host in hostnames.iter().cloned() {
+    for host in hostnames {
+        // Each spawned task needs its own owned copy to move into the future.
+        let host = host.clone();
         set.spawn(async move {
             // Port 0 is a placeholder; `lookup_host` needs a socket-address
             // shaped target but nothing here ever connects to it.
@@ -278,7 +283,10 @@ fn split_entries(entries: Vec<ServiceEntry>) -> (Option<IpAddr>, Vec<Resolver>) 
                 );
             }
             other => {
-                tracing::debug!(kind = other, "dnsleak service returned an entry of unknown type; ignoring");
+                tracing::debug!(
+                    kind = other,
+                    "dnsleak service returned an entry of unknown type; ignoring"
+                );
             }
         }
     }

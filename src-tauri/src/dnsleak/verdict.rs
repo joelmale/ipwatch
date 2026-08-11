@@ -99,7 +99,8 @@ pub fn evaluate(expected_asn: Option<&str>, resolvers: &[Resolver]) -> Verdict {
 /// through to "can't compare" rather than risking a false match.
 fn as_number(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
-    if trimmed.len() < 2 || !trimmed.is_char_boundary(2) || !trimmed[..2].eq_ignore_ascii_case("AS") {
+    if trimmed.len() < 2 || !trimmed.is_char_boundary(2) || !trimmed[..2].eq_ignore_ascii_case("AS")
+    {
         return None;
     }
 
@@ -182,7 +183,10 @@ mod tests {
             resolver("1.1.1.1", Some("AS13335 Cloudflare")),
             resolver("1.0.0.1", Some("as13335")),
         ];
-        assert_eq!(evaluate(Some("AS13335 Cloudflare, Inc."), &resolvers), Verdict::Consistent);
+        assert_eq!(
+            evaluate(Some("AS13335 Cloudflare, Inc."), &resolvers),
+            Verdict::Consistent
+        );
     }
 
     #[test]

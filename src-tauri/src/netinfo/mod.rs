@@ -204,9 +204,6 @@ nameserver 9.9.9.9
     #[test]
     fn collect_smoke_test() {
         let info = collect().expect("collect() should succeed");
-        assert!(
-            info.hostname.is_some(),
-            "expected a hostname to be present"
-        );
+        assert!(info.hostname.is_some(), "expected a hostname to be present");
     }
 }

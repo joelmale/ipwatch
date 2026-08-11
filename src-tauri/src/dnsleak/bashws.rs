@@ -122,7 +122,10 @@ fn parse_response(value: Value) -> Result<Vec<ServiceEntry>, DnsLeakError> {
     match value {
         Value::Array(items) => items
             .into_iter()
-            .map(|item| serde_json::from_value::<ServiceEntry>(item).map_err(|e| DnsLeakError::Parse(e.to_string())))
+            .map(|item| {
+                serde_json::from_value::<ServiceEntry>(item)
+                    .map_err(|e| DnsLeakError::Parse(e.to_string()))
+            })
             .collect(),
         Value::Object(map) => {
             let message = map
@@ -157,7 +160,8 @@ mod tests {
             let id = generate_session_id();
             assert_eq!(id.len(), SESSION_ID_LEN);
             assert!(
-                id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+                id.chars()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
                 "expected lowercase hex, got {id:?}"
             );
         }

@@ -33,10 +33,12 @@ async fn fetch_plaintext_ip(
         .map_err(|e| ProviderError::Http(e.to_string()))?;
 
     // These endpoints append a trailing newline; some pad with whitespace.
-    body.trim().parse::<IpAddr>().map_err(|e| ProviderError::Parse {
-        provider,
-        detail: format!("{e}: {:?}", body.trim()),
-    })
+    body.trim()
+        .parse::<IpAddr>()
+        .map_err(|e| ProviderError::Parse {
+            provider,
+            detail: format!("{e}: {:?}", body.trim()),
+        })
 }
 
 macro_rules! plaintext_provider {
@@ -47,7 +49,9 @@ macro_rules! plaintext_provider {
 
         impl Default for $name {
             fn default() -> Self {
-                Self { url: $default_url.to_string() }
+                Self {
+                    url: $default_url.to_string(),
+                }
             }
         }
 

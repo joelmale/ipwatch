@@ -59,12 +59,18 @@ pub enum ProviderError {
     Http(String),
 
     #[error("could not parse response from {provider}: {detail}")]
-    Parse { provider: &'static str, detail: String },
+    Parse {
+        provider: &'static str,
+        detail: String,
+    },
 
     /// The endpoint answered, but told us it would not serve the request
     /// (rate limit, `status: "fail"`, etc.). Distinct from a transport error.
     #[error("{provider} rejected the request: {message}")]
-    Rejected { provider: &'static str, message: String },
+    Rejected {
+        provider: &'static str,
+        message: String,
+    },
 
     #[error("all providers failed: {0:?}")]
     AllFailed(Vec<String>),

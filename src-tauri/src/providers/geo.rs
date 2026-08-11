@@ -39,14 +39,18 @@ pub struct IpApiCom {
 
 impl Default for IpApiCom {
     fn default() -> Self {
-        Self { base_url: "http://ip-api.com/json".to_string() }
+        Self {
+            base_url: "http://ip-api.com/json".to_string(),
+        }
     }
 }
 
 impl IpApiCom {
     /// Aim the provider at another base URL (wiremock in tests).
     pub fn with_base_url(base_url: impl Into<String>) -> Self {
-        Self { base_url: base_url.into() }
+        Self {
+            base_url: base_url.into(),
+        }
     }
 }
 

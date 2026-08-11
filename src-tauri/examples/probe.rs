@@ -70,7 +70,9 @@ async fn main() {
                 ("timezone", geo.timezone.is_none()),
             ] {
                 if missing {
-                    println!("  WARNING: {label} came back empty — upstream shape may have changed");
+                    println!(
+                        "  WARNING: {label} came back empty — upstream shape may have changed"
+                    );
                 }
             }
         }

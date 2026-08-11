@@ -307,13 +307,25 @@ fn spawn_live_updates(
 
         let initial = poller.current().await;
         let initial_online = poller.is_online().await;
-        apply(&tray, &icons, &mut baseline, initial.as_ref(), initial_online);
+        apply(
+            &tray,
+            &icons,
+            &mut baseline,
+            initial.as_ref(),
+            initial_online,
+        );
 
         loop {
             match rx.recv().await {
                 Ok(change) => {
                     let online = poller.is_online().await;
-                    apply(&tray, &icons, &mut baseline, change.current.as_ref(), online);
+                    apply(
+                        &tray,
+                        &icons,
+                        &mut baseline,
+                        change.current.as_ref(),
+                        online,
+                    );
                 }
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                     // Never exit on Lagged — that would freeze the tray for
@@ -323,9 +335,7 @@ fn spawn_live_updates(
                     continue;
                 }
                 Err(broadcast::error::RecvError::Closed) => {
-                    tracing::error!(
-                        "poller broadcast channel closed; tray will stop updating"
-                    );
+                    tracing::error!("poller broadcast channel closed; tray will stop updating");
                     break;
                 }
             }

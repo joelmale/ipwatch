@@ -71,8 +71,12 @@ pub fn build_message(
             body: "Could not reach the network to verify your VPN status.".to_string(),
         },
         ChangeReason::CountryChanged => {
-            let prev = previous.map(describe_country).unwrap_or_else(unknown_country);
-            let curr = current.map(describe_country).unwrap_or_else(unknown_country);
+            let prev = previous
+                .map(describe_country)
+                .unwrap_or_else(unknown_country);
+            let curr = current
+                .map(describe_country)
+                .unwrap_or_else(unknown_country);
             ToastMessage {
                 title: "VPN may have dropped".to_string(),
                 body: format!(
@@ -84,7 +88,9 @@ pub fn build_message(
         ChangeReason::IspChanged => {
             let prev = previous.map(describe_isp).unwrap_or_else(unknown_isp);
             let curr = current.map(describe_isp).unwrap_or_else(unknown_isp);
-            let country = current.map(describe_country).unwrap_or_else(unknown_country);
+            let country = current
+                .map(describe_country)
+                .unwrap_or_else(unknown_country);
             ToastMessage {
                 title: "VPN may have dropped".to_string(),
                 body: format!(
@@ -109,7 +115,7 @@ fn describe_country(snapshot: &Snapshot) -> String {
         .country
         .clone()
         .or_else(|| snapshot.geo.country_code.clone())
-        .unwrap_or_else(|| unknown_country())
+        .unwrap_or_else(unknown_country)
 }
 
 fn describe_isp(snapshot: &Snapshot) -> String {
@@ -148,7 +154,11 @@ pub fn notify_change(app: &AppHandle, change: &Change) {
         return;
     }
 
-    let message = build_message(change.reason, change.previous.as_ref(), change.current.as_ref());
+    let message = build_message(
+        change.reason,
+        change.previous.as_ref(),
+        change.current.as_ref(),
+    );
 
     if let Err(err) = app
         .notification()
@@ -166,7 +176,12 @@ mod tests {
     use super::*;
     use crate::providers::GeoInfo;
 
-    fn snapshot(ip: &str, country: Option<&str>, country_code: Option<&str>, isp: Option<&str>) -> Snapshot {
+    fn snapshot(
+        ip: &str,
+        country: Option<&str>,
+        country_code: Option<&str>,
+        isp: Option<&str>,
+    ) -> Snapshot {
         Snapshot {
             ip: ip.parse().unwrap(),
             geo: GeoInfo {
@@ -213,10 +228,24 @@ mod tests {
 
     #[test]
     fn country_changed_message_includes_previous_and_current() {
-        let previous = snapshot("198.51.100.1", Some("Netherlands"), Some("NL"), Some("NordVPN"));
-        let current = snapshot("203.0.113.7", Some("United States"), Some("US"), Some("NordVPN"));
+        let previous = snapshot(
+            "198.51.100.1",
+            Some("Netherlands"),
+            Some("NL"),
+            Some("NordVPN"),
+        );
+        let current = snapshot(
+            "203.0.113.7",
+            Some("United States"),
+            Some("US"),
+            Some("NordVPN"),
+        );
 
-        let msg = build_message(ChangeReason::CountryChanged, Some(&previous), Some(&current));
+        let msg = build_message(
+            ChangeReason::CountryChanged,
+            Some(&previous),
+            Some(&current),
+        );
 
         assert_eq!(msg.title, "VPN may have dropped");
         assert_eq!(
@@ -227,8 +256,18 @@ mod tests {
 
     #[test]
     fn isp_changed_message_includes_country_and_isps() {
-        let previous = snapshot("198.51.100.1", Some("United States"), Some("US"), Some("NordVPN"));
-        let current = snapshot("203.0.113.7", Some("United States"), Some("US"), Some("Comcast"));
+        let previous = snapshot(
+            "198.51.100.1",
+            Some("United States"),
+            Some("US"),
+            Some("NordVPN"),
+        );
+        let current = snapshot(
+            "203.0.113.7",
+            Some("United States"),
+            Some("US"),
+            Some("Comcast"),
+        );
 
         let msg = build_message(ChangeReason::IspChanged, Some(&previous), Some(&current));
 
@@ -244,7 +283,11 @@ mod tests {
         let previous = snapshot("198.51.100.1", None, None, None);
         let current = snapshot("203.0.113.7", None, None, None);
 
-        let msg = build_message(ChangeReason::CountryChanged, Some(&previous), Some(&current));
+        let msg = build_message(
+            ChangeReason::CountryChanged,
+            Some(&previous),
+            Some(&current),
+        );
 
         assert_eq!(
             msg.body,
@@ -263,7 +306,11 @@ mod tests {
         let previous = snapshot("198.51.100.1", None, Some("NL"), None);
         let current = snapshot("203.0.113.7", None, Some("US"), None);
 
-        let msg = build_message(ChangeReason::CountryChanged, Some(&previous), Some(&current));
+        let msg = build_message(
+            ChangeReason::CountryChanged,
+            Some(&previous),
+            Some(&current),
+        );
 
         assert_eq!(msg.body, "Country changed: NL \u{2192} US (203.0.113.7)");
     }

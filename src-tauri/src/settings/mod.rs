@@ -282,11 +282,17 @@ mod tests {
 
     #[test]
     fn settings_clamp_method_clamps_in_place() {
-        let mut settings = Settings { poll_interval_secs: 0, ..Settings::default() };
+        let mut settings = Settings {
+            poll_interval_secs: 0,
+            ..Settings::default()
+        };
         settings.clamp();
         assert_eq!(settings.poll_interval_secs, MIN_POLL_INTERVAL_SECS);
 
-        let mut settings = Settings { poll_interval_secs: 999_999, ..Settings::default() };
+        let mut settings = Settings {
+            poll_interval_secs: 999_999,
+            ..Settings::default()
+        };
         settings.clamp();
         assert_eq!(settings.poll_interval_secs, MAX_POLL_INTERVAL_SECS);
     }

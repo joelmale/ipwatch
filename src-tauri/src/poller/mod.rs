@@ -95,7 +95,11 @@ pub struct Poller {
 
 impl Poller {
     /// Builds a poller with the default 60s interval.
-    pub fn new(ip_chain: Chain<dyn IpProvider>, geo_chain: Chain<dyn GeoProvider>, client: Client) -> Self {
+    pub fn new(
+        ip_chain: Chain<dyn IpProvider>,
+        geo_chain: Chain<dyn GeoProvider>,
+        client: Client,
+    ) -> Self {
         Self::with_interval(ip_chain, geo_chain, client, DEFAULT_INTERVAL)
     }
 
@@ -488,7 +492,10 @@ mod tests {
             .seed(snapshot("1.1.1.1", Some("US"), Some("Cloudflare")))
             .await;
 
-        assert_eq!(poller.current().await.map(|s| s.ip.to_string()).as_deref(), Some("1.1.1.1"));
+        assert_eq!(
+            poller.current().await.map(|s| s.ip.to_string()).as_deref(),
+            Some("1.1.1.1")
+        );
         assert!(
             changes.try_recv().is_err(),
             "seeding is bookkeeping, not an observation: it must not publish a Change"
@@ -517,7 +524,10 @@ mod tests {
         let stored = snapshot("1.1.1.1", Some("US"), Some("Cloudflare"));
         poller.seed(stored.clone()).await;
 
-        let fresh = Snapshot { observed_at: 12_345, ..stored.clone() };
+        let fresh = Snapshot {
+            observed_at: 12_345,
+            ..stored.clone()
+        };
 
         assert_eq!(
             classify(poller.current().await.as_ref(), &fresh),
@@ -532,7 +542,9 @@ mod tests {
         // when it last *changed*, and a partial seeded snapshot has to be
         // replaced by a complete one on the first live poll.
         let poller = idle_poller();
-        poller.seed(snapshot("1.1.1.1", Some("US"), Some("Cloudflare"))).await;
+        poller
+            .seed(snapshot("1.1.1.1", Some("US"), Some("Cloudflare")))
+            .await;
 
         let mut fresh = snapshot("1.1.1.1", Some("US"), Some("Cloudflare"));
         fresh.observed_at = 99_999;
@@ -541,7 +553,10 @@ mod tests {
         poller.handle_success(fresh).await;
 
         let stored = poller.current().await.expect("a snapshot is stored");
-        assert_eq!(stored.observed_at, 99_999, "observed_at must advance on an unchanged tick");
+        assert_eq!(
+            stored.observed_at, 99_999,
+            "observed_at must advance on an unchanged tick"
+        );
         assert_eq!(
             stored.geo.city.as_deref(),
             Some("Manassas"),
@@ -613,9 +628,11 @@ mod tests {
     /// simulated seconds) would win the race, and the test would fail.
     #[tokio::test(start_paused = true)]
     async fn set_interval_takes_effect_before_the_old_interval_elapses() {
-        let ip_chain: Chain<dyn IpProvider> = Chain::new(vec![Box::new(SequentialIpProvider(
-            std::sync::atomic::AtomicU32::new(1),
-        )) as Box<dyn IpProvider>]);
+        let ip_chain: Chain<dyn IpProvider> =
+            Chain::new(vec![
+                Box::new(SequentialIpProvider(std::sync::atomic::AtomicU32::new(1)))
+                    as Box<dyn IpProvider>,
+            ]);
         let geo_chain: Chain<dyn GeoProvider> = Chain::new(Vec::new());
         let client = crate::providers::http_client().expect("client builds without network access");
         let poller = Arc::new(Poller::with_interval(

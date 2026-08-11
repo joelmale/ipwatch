@@ -51,7 +51,10 @@ async fn chain_falls_back_to_secondary_when_primary_returns_server_error() {
         Box::new(IcanHazIp::with_url(secondary.uri())) as Box<dyn IpProvider>,
     ]);
 
-    let ip = chain.fetch_ip(&client).await.expect("secondary should succeed");
+    let ip = chain
+        .fetch_ip(&client)
+        .await
+        .expect("secondary should succeed");
     assert_eq!(ip, "203.0.113.5".parse::<IpAddr>().unwrap());
 }
 
@@ -76,7 +79,10 @@ async fn chain_reports_all_failed_with_one_named_error_per_provider() {
         Box::new(IcanHazIp::with_url(secondary.uri())) as Box<dyn IpProvider>,
     ]);
 
-    let err = chain.fetch_ip(&client).await.expect_err("both providers fail");
+    let err = chain
+        .fetch_ip(&client)
+        .await
+        .expect_err("both providers fail");
     match err {
         ProviderError::AllFailed(errors) => {
             assert_eq!(errors.len(), 2, "one entry per provider: {errors:?}");
@@ -114,7 +120,10 @@ async fn chain_treats_unparseable_success_body_as_parse_error_and_continues() {
         Box::new(IcanHazIp::with_url(secondary.uri())) as Box<dyn IpProvider>,
     ]);
 
-    let ip = chain.fetch_ip(&client).await.expect("secondary should succeed");
+    let ip = chain
+        .fetch_ip(&client)
+        .await
+        .expect("secondary should succeed");
     assert_eq!(ip, "203.0.113.9".parse::<IpAddr>().unwrap());
 }
 
@@ -142,7 +151,10 @@ async fn chain_never_calls_later_providers_once_the_first_succeeds() {
         Box::new(IcanHazIp::with_url(secondary.uri())) as Box<dyn IpProvider>,
     ]);
 
-    let ip = chain.fetch_ip(&client).await.expect("primary should succeed");
+    let ip = chain
+        .fetch_ip(&client)
+        .await
+        .expect("primary should succeed");
     assert_eq!(ip, "203.0.113.1".parse::<IpAddr>().unwrap());
 }
 
@@ -191,7 +203,10 @@ async fn plaintext_garbage_body_yields_parse_error() {
     let client = http_client().expect("client builds");
     let provider = Ipify::with_url(server.uri());
 
-    let err = provider.fetch_ip(&client).await.expect_err("garbage body should fail to parse");
+    let err = provider
+        .fetch_ip(&client)
+        .await
+        .expect_err("garbage body should fail to parse");
     match err {
         ProviderError::Parse { provider, .. } => assert_eq!(provider, "ipify"),
         other => panic!("expected Parse error, got {other:?}"),
@@ -222,8 +237,7 @@ async fn geo_success_payload_maps_onto_geo_info_including_renamed_fields() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(IP_API_SUCCESS_BODY, "application/json"),
+            ResponseTemplate::new(200).set_body_raw(IP_API_SUCCESS_BODY, "application/json"),
         )
         .mount(&server)
         .await;
@@ -231,10 +245,21 @@ async fn geo_success_payload_maps_onto_geo_info_including_renamed_fields() {
     let client = http_client().expect("client builds");
     let provider = IpApiCom::with_base_url(server.uri());
 
-    let geo = provider.fetch_geo(&client, None).await.expect("should parse success payload");
+    let geo = provider
+        .fetch_geo(&client, None)
+        .await
+        .expect("should parse success payload");
 
-    assert_eq!(geo.country_code.as_deref(), Some("US"), "countryCode -> country_code");
-    assert_eq!(geo.region.as_deref(), Some("California"), "regionName -> region");
+    assert_eq!(
+        geo.country_code.as_deref(),
+        Some("US"),
+        "countryCode -> country_code"
+    );
+    assert_eq!(
+        geo.region.as_deref(),
+        Some("California"),
+        "regionName -> region"
+    );
     assert_eq!(geo.asn.as_deref(), Some("AS15169 Google LLC"), "as -> asn");
     assert_eq!(geo.country.as_deref(), Some("United States"));
     assert_eq!(geo.city.as_deref(), Some("Mountain View"));
@@ -260,7 +285,10 @@ async fn geo_status_fail_in_http_200_body_yields_rejected_with_message() {
     let client = http_client().expect("client builds");
     let provider = IpApiCom::with_base_url(server.uri());
 
-    let err = provider.fetch_geo(&client, None).await.expect_err("status: fail should error");
+    let err = provider
+        .fetch_geo(&client, None)
+        .await
+        .expect_err("status: fail should error");
     match err {
         ProviderError::Rejected { message, .. } => {
             assert_eq!(message, "reserved range");
@@ -280,7 +308,10 @@ async fn geo_http_429_yields_rejected_error() {
     let client = http_client().expect("client builds");
     let provider = IpApiCom::with_base_url(server.uri());
 
-    let err = provider.fetch_geo(&client, None).await.expect_err("429 should be rejected");
+    let err = provider
+        .fetch_geo(&client, None)
+        .await
+        .expect_err("429 should be rejected");
     match err {
         ProviderError::Rejected { provider, .. } => assert_eq!(provider, "ip-api.com"),
         other => panic!("expected Rejected, got {other:?}"),
@@ -293,8 +324,7 @@ async fn geo_request_path_includes_ip_when_a_specific_ip_is_requested() {
     Mock::given(method("GET"))
         .and(path("/json/203.0.113.9"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(IP_API_SUCCESS_BODY, "application/json"),
+            ResponseTemplate::new(200).set_body_raw(IP_API_SUCCESS_BODY, "application/json"),
         )
         .expect(1)
         .mount(&server)
@@ -323,8 +353,7 @@ async fn geo_request_path_includes_ipv6_address_unbracketed() {
     Mock::given(method("GET"))
         .and(path("/json/2001:db8::1"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(IP_API_SUCCESS_BODY, "application/json"),
+            ResponseTemplate::new(200).set_body_raw(IP_API_SUCCESS_BODY, "application/json"),
         )
         .expect(1)
         .mount(&server)
@@ -346,8 +375,7 @@ async fn geo_request_path_omits_ip_when_no_specific_ip_is_requested() {
     Mock::given(method("GET"))
         .and(path("/json"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(IP_API_SUCCESS_BODY, "application/json"),
+            ResponseTemplate::new(200).set_body_raw(IP_API_SUCCESS_BODY, "application/json"),
         )
         .expect(1)
         .mount(&server)

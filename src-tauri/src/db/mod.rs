@@ -38,7 +38,12 @@ impl ChangeReason {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    /// Parses the stored `ip_events.change_reason` text back into a variant.
+    ///
+    /// Named for the storage representation rather than as `from_str`, which
+    /// reads as an implementation of `std::str::FromStr` it is not — this
+    /// returns `Option` and is paired specifically with `as_str`.
+    pub fn from_stored(s: &str) -> Option<Self> {
         Some(match s {
             "initial" => Self::Initial,
             "ip_changed" => Self::IpChanged,
@@ -127,7 +132,7 @@ impl Db {
                 isp: row.get(5)?,
                 change_reason: row
                     .get::<_, String>(6)
-                    .map(|s| ChangeReason::from_str(&s).unwrap_or(ChangeReason::Initial))?,
+                    .map(|s| ChangeReason::from_stored(&s).unwrap_or(ChangeReason::Initial))?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -178,9 +183,12 @@ mod tests {
     #[test]
     fn recent_events_returns_newest_first() {
         let db = db();
-        db.insert_event(&event(100, "198.51.100.1", ChangeReason::Initial)).unwrap();
-        db.insert_event(&event(300, "198.51.100.3", ChangeReason::CountryChanged)).unwrap();
-        db.insert_event(&event(200, "198.51.100.2", ChangeReason::IpChanged)).unwrap();
+        db.insert_event(&event(100, "198.51.100.1", ChangeReason::Initial))
+            .unwrap();
+        db.insert_event(&event(300, "198.51.100.3", ChangeReason::CountryChanged))
+            .unwrap();
+        db.insert_event(&event(200, "198.51.100.2", ChangeReason::IpChanged))
+            .unwrap();
 
         let rows = db.recent_events(10).unwrap();
         let timestamps: Vec<i64> = rows.iter().map(|e| e.ts).collect();
@@ -192,7 +200,8 @@ mod tests {
     fn recent_events_honours_the_limit() {
         let db = db();
         for i in 0..5 {
-            db.insert_event(&event(i, "203.0.113.7", ChangeReason::IpChanged)).unwrap();
+            db.insert_event(&event(i, "203.0.113.7", ChangeReason::IpChanged))
+                .unwrap();
         }
 
         assert_eq!(db.recent_events(2).unwrap().len(), 2);
@@ -255,7 +264,7 @@ mod tests {
             ChangeReason::IspChanged,
             ChangeReason::Offline,
         ] {
-            assert_eq!(ChangeReason::from_str(reason.as_str()), Some(reason));
+            assert_eq!(ChangeReason::from_stored(reason.as_str()), Some(reason));
         }
     }
 
@@ -289,7 +298,8 @@ mod tests {
 
         {
             let db = Db::open(&path).unwrap();
-            db.insert_event(&event(1, "203.0.113.7", ChangeReason::Initial)).unwrap();
+            db.insert_event(&event(1, "203.0.113.7", ChangeReason::Initial))
+                .unwrap();
         }
 
         let reopened = Db::open(&path).unwrap();

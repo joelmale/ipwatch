@@ -35,7 +35,9 @@ const SAMPLE_SUCCESS_BODY: &str = r#"[
 async fn fetch_results_parses_valid_array_response_including_conclusion_quirk() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(SAMPLE_SUCCESS_BODY, "application/json"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(SAMPLE_SUCCESS_BODY, "application/json"),
+        )
         .mount(&server)
         .await;
 
@@ -46,17 +48,28 @@ async fn fetch_results_parses_valid_array_response_including_conclusion_quirk() 
         .fetch_results(&client, &session("abc123456789"))
         .await
         .expect("valid array response should parse");
-    assert_eq!(entries.len(), 3, "all three entries, including conclusion, should deserialize");
+    assert_eq!(
+        entries.len(),
+        3,
+        "all three entries, including conclusion, should deserialize"
+    );
 
     let (external_ip, resolvers) = split_entries(entries);
     assert_eq!(external_ip, Some("203.0.113.9".parse::<IpAddr>().unwrap()));
 
     // The "DNS is not leaking." conclusion entry must not become a resolver,
     // and must not blow up trying to parse its `ip` field as an address.
-    assert_eq!(resolvers.len(), 1, "conclusion entry must not be misparsed as a resolver");
+    assert_eq!(
+        resolvers.len(),
+        1,
+        "conclusion entry must not be misparsed as a resolver"
+    );
     assert_eq!(resolvers[0].ip, "1.1.1.1".parse::<IpAddr>().unwrap());
     assert_eq!(resolvers[0].country.as_deref(), Some("Australia"));
-    assert_eq!(resolvers[0].asn.as_deref(), Some("AS13335 Cloudflare, Inc."));
+    assert_eq!(
+        resolvers[0].asn.as_deref(),
+        Some("AS13335 Cloudflare, Inc.")
+    );
 }
 
 #[tokio::test]
@@ -93,7 +106,10 @@ async fn fetch_results_yields_clean_service_error_for_the_error_object_shape() {
 async fn fetch_results_yields_clean_error_for_unrecognized_object_shape() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(r#"{"unexpected":"shape"}"#, "application/json"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(r#"{"unexpected":"shape"}"#, "application/json"),
+        )
         .mount(&server)
         .await;
 
@@ -137,7 +153,9 @@ async fn fetch_results_yields_http_error_for_non_success_status() {
 async fn fetch_results_yields_parse_error_for_malformed_json_body() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw("not json at all", "application/json"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw("not json at all", "application/json"),
+        )
         .mount(&server)
         .await;
 
@@ -148,7 +166,10 @@ async fn fetch_results_yields_parse_error_for_malformed_json_body() {
         .fetch_results(&client, &session("abc123456789"))
         .await
         .expect_err("malformed body should not panic");
-    assert!(matches!(err, DnsLeakError::Parse(_)), "expected Parse error, got {err:?}");
+    assert!(
+        matches!(err, DnsLeakError::Parse(_)),
+        "expected Parse error, got {err:?}"
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -171,7 +192,10 @@ fn split_entries_ignores_unparseable_ip_field_on_ip_entry() {
         kind: "ip".to_string(),
     }];
     let (ip, resolvers) = split_entries(entries);
-    assert_eq!(ip, None, "unparseable ip entry must be dropped, not surfaced as garbage");
+    assert_eq!(
+        ip, None,
+        "unparseable ip entry must be dropped, not surfaced as garbage"
+    );
     assert!(resolvers.is_empty());
 }
 
@@ -200,7 +224,10 @@ fn split_entries_parses_ipv6_resolver_and_ip_entries() {
 
     assert_eq!(external_ip, Some("2600:1900:4000::1".parse().unwrap()));
     assert_eq!(resolvers.len(), 1);
-    assert_eq!(resolvers[0].ip, "2001:4860:4860::8888".parse::<IpAddr>().unwrap());
+    assert_eq!(
+        resolvers[0].ip,
+        "2001:4860:4860::8888".parse::<IpAddr>().unwrap()
+    );
     assert_eq!(resolvers[0].asn.as_deref(), Some("AS15169 Google LLC"));
 }
 
@@ -239,19 +266,34 @@ impl LeakTestService for NoProbeService {
         session("fixed-session-id")
     }
 
-    async fn fetch_results(&self, client: &Client, session: &LeakSession) -> Result<Vec<ServiceEntry>, DnsLeakError> {
+    async fn fetch_results(
+        &self,
+        client: &Client,
+        session: &LeakSession,
+    ) -> Result<Vec<ServiceEntry>, DnsLeakError> {
         let url = format!("{}/dnsleak/test/{}?json", self.base_url, session.id);
-        let resp = client.get(&url).send().await.map_err(|e| DnsLeakError::Http(e.to_string()))?;
-        let value: serde_json::Value = resp.json().await.map_err(|e| DnsLeakError::Parse(e.to_string()))?;
+        let resp = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| DnsLeakError::Http(e.to_string()))?;
+        let value: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| DnsLeakError::Parse(e.to_string()))?;
         match value {
             serde_json::Value::Array(items) => items
                 .into_iter()
                 .map(|item| {
-                    serde_json::from_value::<ServiceEntry>(item).map_err(|e| DnsLeakError::Parse(e.to_string()))
+                    serde_json::from_value::<ServiceEntry>(item)
+                        .map_err(|e| DnsLeakError::Parse(e.to_string()))
                 })
                 .collect(),
             serde_json::Value::Object(map) => Err(DnsLeakError::ServiceError(
-                map.get("error").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
+                map.get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
             )),
             _ => Err(DnsLeakError::Parse("unexpected shape".to_string())),
         }
@@ -267,7 +309,9 @@ async fn run_test_with_empty_resolver_list_reports_no_resolvers_verdict() {
         .await;
 
     let client = Client::new();
-    let service = NoProbeService { base_url: server.uri() };
+    let service = NoProbeService {
+        base_url: server.uri(),
+    };
 
     let report = run_test(&service, &client, Some("AS7922 Comcast Cable"))
         .await
@@ -289,7 +333,9 @@ async fn run_test_draws_consistent_verdict_when_resolver_asn_matches_expected() 
         .await;
 
     let client = Client::new();
-    let service = NoProbeService { base_url: server.uri() };
+    let service = NoProbeService {
+        base_url: server.uri(),
+    };
 
     let report = run_test(&service, &client, Some("AS7922 Comcast Cable"))
         .await
@@ -302,18 +348,23 @@ async fn run_test_draws_consistent_verdict_when_resolver_asn_matches_expected() 
 async fn run_test_propagates_service_error_shape_as_err_not_panic() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(r#"{"error": "No DNS servers found. Try again..."}"#, "application/json"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"error": "No DNS servers found. Try again..."}"#,
+            "application/json",
+        ))
         .mount(&server)
         .await;
 
     let client = Client::new();
-    let service = NoProbeService { base_url: server.uri() };
+    let service = NoProbeService {
+        base_url: server.uri(),
+    };
 
     let err = run_test(&service, &client, None)
         .await
         .expect_err("service error shape must surface as a typed Err, not a panic");
-    assert!(matches!(err, DnsLeakError::ServiceError(_)), "expected ServiceError, got {err:?}");
+    assert!(
+        matches!(err, DnsLeakError::ServiceError(_)),
+        "expected ServiceError, got {err:?}"
+    );
 }
