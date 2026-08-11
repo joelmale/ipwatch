@@ -213,7 +213,13 @@ button#refresh-btn:disabled {
 
 .fieldgrid {
   display: grid;
-  grid-template-columns: auto 1fr;
+  /* `minmax(0, 1fr)` (not a bare `1fr`) is load-bearing: an `fr` track's
+     implicit minimum is its content's min-content size, and `word-break` /
+     `overflow-wrap: break-word` do NOT shrink min-content — only `anywhere`
+     does. Without the explicit `0` floor, a long unbroken token (an IPv6
+     address in particular — e.g. `fe80::a1b2:c3d4:e5f6:7890%15`) would widen
+     this column past the panel instead of wrapping. */
+  grid-template-columns: auto minmax(0, 1fr);
   column-gap: 14px;
   row-gap: 10px;
   margin: 0;
@@ -230,6 +236,7 @@ button#refresh-btn:disabled {
   font-size: 0.92rem;
   font-weight: 500;
   text-align: right;
+  overflow-wrap: anywhere;
   word-break: break-word;
 }
 
@@ -601,6 +608,138 @@ button#refresh-btn:disabled {
 
 .dnsleak-table__row--foreign td:first-child {
   box-shadow: inset 3px 0 0 var(--color-offline);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Settings panel                                                         */
+/* ---------------------------------------------------------------------- */
+
+.panel--settings {
+  padding: 16px 18px 18px;
+}
+
+.settings-error {
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  background: var(--color-offline-bg);
+  color: var(--color-offline);
+  border: 1px solid color-mix(in srgb, var(--color-offline) 35%, transparent);
+}
+
+/* Reuses the app's "online" language — this is a plain confirmation, not a
+   status claim, so it borrows the same reassuring visual register as the
+   DNS leak panel's "consistent" verdict. */
+.settings-success {
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  background: var(--color-online-bg);
+  color: var(--color-online);
+  border: 1px solid color-mix(in srgb, var(--color-online) 35%, transparent);
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.settings-field label {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.settings-field input[type="number"],
+.settings-field input[type="text"] {
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  padding: 0.5em 0.7em;
+  font-size: 0.92rem;
+  font-family: inherit;
+  color: var(--color-text);
+  background-color: var(--color-surface);
+  max-width: 220px;
+  width: 100%;
+}
+
+.settings-field input[type="number"]:focus,
+.settings-field input[type="text"]:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.settings-field--checkbox label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.settings-field--checkbox input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
+.settings-hint {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+}
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+button#settings-save-btn {
+  border-radius: 8px;
+  border: 1px solid var(--color-accent);
+  padding: 0.5em 1.2em;
+  font-size: 0.9rem;
+  font-weight: 600;
+  font-family: inherit;
+  color: #fff;
+  background-color: var(--color-accent);
+  cursor: pointer;
+  transition: opacity 0.15s, background-color 0.15s, border-color 0.15s, color 0.15s;
+}
+
+button#settings-save-btn:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+/* Disabled means "nothing to save" (form matches the last loaded/saved
+   settings) — styled as inert rather than merely dimmed, so the save/dirty
+   state reads unambiguously at a glance. */
+button#settings-save-btn:disabled {
+  cursor: default;
+  background-color: var(--color-surface);
+  border-color: var(--color-border);
+  color: var(--color-text-muted);
+  opacity: 0.7;
+}
+
+.settings-clamp-note {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-checking);
 }
 
 /* ---------------------------------------------------------------------- */
