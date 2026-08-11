@@ -1,0 +1,91 @@
+name: release
+
+# Tag-triggered rather than on every push. Actions artifacts (see build.yml)
+# can only be downloaded by logged-in GitHub users, which makes them useless
+# for actually distributing a desktop app; Release assets are public.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and attach the release to (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows
+          - os: macos-latest
+            name: macos
+          - os: ubuntu-latest
+            name: linux
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Install Linux system dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            patchelf \
+            build-essential \
+            file \
+            wget
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: release-${{ matrix.name }}
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      # Published as a DRAFT: the release is assembled and the installers
+      # attached, but nothing becomes public until it is reviewed and released
+      # by hand. These builds are unsigned, so a human should look before
+      # anyone is invited to download and run them.
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: ipwatch __VERSION__
+          releaseBody: |
+            Built automatically from `${{ github.event.inputs.tag || github.ref_name }}`.
+
+            **These installers are not code-signed.** Windows SmartScreen and
+            macOS Gatekeeper will warn on first run.
+
+            | Platform | File |
+            |---|---|
+            | Windows | `.msi` or `-setup.exe` |
+            | macOS | `.dmg` |
+            | Linux | `.deb`, `.rpm`, `.AppImage` |
+          releaseDraft: true
+          prerelease: false
