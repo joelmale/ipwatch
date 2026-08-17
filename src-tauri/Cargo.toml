@@ -1,6 +1,6 @@
 [package]
 name = "ipwatch"
-version = "0.1.0"
+version = "0.1.1"
 description = "System-tray monitor for external IP, geolocation, and DNS — verify your VPN is working"
 authors = ["Joel Nelson"]
 license = "MIT"
