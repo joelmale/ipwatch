@@ -24,6 +24,34 @@
 
       <div id="error-banner" class="error-banner" hidden></div>
 
+      <section id="onboarding-card" class="onboarding-card" hidden>
+        <h2 class="onboarding-card__title">Welcome to ipwatch</h2>
+        <p class="onboarding-card__body">
+          A couple of one-time choices — you can always change these later from the tray menu's
+          Settings.
+        </p>
+
+        <div class="onboarding-card__options">
+          <label>
+            <input type="checkbox" id="onboarding-launch-startup" />
+            <span id="onboarding-launch-startup-label">Start ipwatch when Windows starts</span>
+          </label>
+          <label>
+            <input type="checkbox" id="onboarding-start-minimised" />
+            Start minimised to the tray
+          </label>
+        </div>
+
+        <div id="onboarding-error" class="onboarding-error" hidden></div>
+
+        <div class="onboarding-card__actions">
+          <button id="onboarding-save-btn" type="button">Save</button>
+          <button id="onboarding-dismiss-btn" type="button" class="onboarding-card__dismiss">
+            Not now
+          </button>
+        </div>
+      </section>
+
       <section id="headline" class="headline">
         <div class="headline__ip" id="headline-ip">—</div>
         <div class="headline__country" id="headline-country">Waiting for first check…</div>

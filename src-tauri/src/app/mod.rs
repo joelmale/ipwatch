@@ -79,6 +79,7 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let initial_interval = Duration::from_secs(settings.poll_interval_secs);
     let expected_country_code = settings.expected_country_code.clone();
     let launch_at_startup = settings.launch_at_startup;
+    let start_minimised = settings.start_minimised;
     let shared_settings: SharedSettings = Arc::new(StdMutex::new(settings));
     app.manage(shared_settings.clone());
 
@@ -88,6 +89,17 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     // reinstall of the autostart entry, or a settings.json restored from
     // backup).
     apply_autostart(&handle, launch_at_startup);
+
+    // `tauri.conf.json`'s main window is configured `"visible": false` so it
+    // never paints on screen to begin with; this is the one deliberate place
+    // that flips it to visible, unless the user opted into staying
+    // minimised (PLAN.md brief 6.2). Hidden-by-config-then-shown is required
+    // here, not show-then-hide: the latter paints the window for a frame
+    // before hiding it again, which is exactly the startup flash this brief
+    // exists to eliminate. Does not gate anything else below — the poller,
+    // tray, event bridge, and tile cache prune all start unconditionally
+    // regardless of whether this ever shows the window.
+    show_main_window_unless_minimised(&handle, start_minimised);
 
     // Age/size-bounded, and run on its own background task so a slow or
     // failing prune can never delay startup or block a concurrent tile
@@ -134,6 +146,33 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     spawn_event_bridge(handle, poller, shared_db, shared_settings);
 
     Ok(())
+}
+
+/// Invoked by `tauri-plugin-single-instance` (registered first in the
+/// builder chain in `lib.rs` — see that registration's doc comment for why
+/// order matters) when a second instance is launched while this one is
+/// already running. Brings the existing main window to the front instead of
+/// letting a second process start, which would double the poll rate against
+/// ip-api.com, open a second SQLite writer on the same file, and spawn a
+/// second tray icon (PLAN.md brief 6.1).
+///
+/// `argv`/`cwd` describe the second instance's command line and working
+/// directory. Both are ignored today. They are the hook for any future
+/// command-line handling — a `--silent` *flag*, say, distinct from the
+/// persisted `start_minimised` setting, which is read from `settings.json`
+/// at startup and never from `argv`.
+///
+/// Deliberately does only window plumbing: never starts a poller, opens a DB
+/// handle, or touches settings. Those are already running in this — the
+/// first — process, and the second process exits right after this callback
+/// returns.
+#[cfg(desktop)]
+pub fn on_second_instance(app: &AppHandle, _argv: Vec<String>, _cwd: String) {
+    // Delegates rather than reimplementing: the tray's Details item wants the
+    // same "bring the existing window to the front" behaviour, and duplicating
+    // it would mean two copies of the window label and two orderings of
+    // unminimize/show/focus that could silently diverge.
+    tray::show_details_window(app);
 }
 
 /// Rebuilds a `Snapshot` from the newest persisted `ip_events` row, for
@@ -289,6 +328,36 @@ fn apply_autostart(app: &AppHandle, enabled: bool) {
     };
     if let Err(err) = result {
         tracing::error!(%err, enabled, "failed to apply launch-at-startup setting");
+    }
+}
+
+/// Shows the main window unless `start_minimised` is `true` (PLAN.md brief
+/// 6.2). See the call site in `setup` for why the window must be configured
+/// hidden (`tauri.conf.json`) and shown deliberately here, rather than shown
+/// then hidden.
+///
+/// Failures are logged, not propagated — the same "never fail startup over a
+/// best-effort side effect" policy as `apply_autostart`. A window that fails
+/// to show still exists and can be reached later via the tray's Details item
+/// (`tray::show_details_window`), which does its own `show()`/`set_focus()`
+/// and does not depend on this call having succeeded.
+fn show_main_window_unless_minimised(handle: &AppHandle, start_minimised: bool) {
+    if start_minimised {
+        return;
+    }
+
+    match handle.get_webview_window(tray::MAIN_WINDOW_LABEL) {
+        Some(window) => {
+            if let Err(err) = window.show() {
+                tracing::error!(%err, "failed to show main window at startup");
+            } else if let Err(err) = window.set_focus() {
+                // Non-fatal: the window is visible either way, just possibly
+                // not focused. Mirrors `tray::show_details_window`'s
+                // treatment of a failed `set_focus`.
+                tracing::warn!(%err, "failed to focus main window at startup");
+            }
+        }
+        None => tracing::error!("main window not found at startup; cannot show it"),
     }
 }
 
@@ -550,4 +619,60 @@ pub async fn set_settings(
     }
 
     Ok(effective)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::poller::classify;
+
+    /// Guards the Phase 3 poller-seeding behaviour that brief 6.1 depends on:
+    /// a second `Initial` classification for an unchanged IP must stay
+    /// suppressed once the observation round-trips through a real `Db` via
+    /// `last_snapshot`, not just when a `Snapshot` is constructed by hand (see
+    /// `poller::tests::a_seeded_baseline_makes_an_unchanged_restart_silent`
+    /// for that narrower, Tauri-free version). Without seeding, this
+    /// reconstructs to a fresh session with no baseline, `classify` returns
+    /// `Initial` again, and every restart adds a duplicate `ip_events` row.
+    ///
+    /// Scope, stated plainly: this exercises `last_snapshot` + `classify`,
+    /// both of which predate brief 6.1, so it passes on the pre-6.1 tree too.
+    /// It is a guard against regressing the seeding fix that makes duplicate
+    /// launches harmless — it is **not** coverage of the single-instance
+    /// mechanism itself. `on_second_instance` and the plugin's registration
+    /// order are exercised only by launching an installed build twice, which
+    /// no unit test here can do.
+    #[test]
+    fn a_second_initial_for_an_unchanged_ip_is_suppressed_after_reload() {
+        let db = Db::open(":memory:").expect("in-memory db opens");
+        db.insert_event(&IpEvent {
+            id: None,
+            ts: 1_700_000_000,
+            external_ip: "203.0.113.7".to_string(),
+            country: Some("United States".to_string()),
+            country_code: Some("US".to_string()),
+            isp: Some("Example ISP".to_string()),
+            change_reason: ChangeReason::Initial,
+        })
+        .unwrap();
+
+        let shared: SharedDb = Arc::new(StdMutex::new(Some(db)));
+        let baseline =
+            last_snapshot(&shared).expect("a baseline is rebuilt from the stored row");
+
+        // What the poller would observe on the very next tick if nothing
+        // about the connection has actually changed: same ip/country/isp,
+        // only `observed_at` moves forward.
+        let fresh = Snapshot {
+            observed_at: 1_700_000_999,
+            ..baseline.clone()
+        };
+
+        assert_eq!(
+            classify(Some(&baseline), &fresh),
+            None,
+            "an unchanged ip/country/isp must not classify as a change, or a second \
+             process (or restart) would double-write ip_events"
+        );
+    }
 }

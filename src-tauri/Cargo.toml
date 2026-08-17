@@ -1,6 +1,6 @@
 [package]
 name = "ipwatch"
-version = "0.1.0"
+version = "0.1.1"
 description = "System-tray monitor for external IP, geolocation, and DNS — verify your VPN is working"
 authors = ["Joel Nelson"]
 license = "MIT"
@@ -39,6 +39,13 @@ uuid = { version = "1", features = ["v4"] }
 
 [target."cfg(windows)".dependencies]
 ipconfig = "0.3.4"
+
+# Desktop-only: the plugin has no mobile equivalent. Gated at the Cargo-target
+# level (not just `#[cfg(desktop)]` in code) so it isn't pulled in at all for
+# android/ios builds. Version pinned against the latest release on crates.io
+# as of 2026-08-17 (2.4.3, published 2026-07-13).
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-single-instance = "2.4.3"
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["full", "test-util"] }

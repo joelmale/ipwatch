@@ -46,6 +46,32 @@ pub struct Settings {
     pub notifications_enabled: bool,
     pub launch_at_startup: bool,
     pub expected_country_code: Option<String>,
+
+    /// Whether the main window should stay hidden (tray only) at launch
+    /// instead of showing immediately. Exists because `launch_at_startup`
+    /// (Phase 4) and an always-visible main window contradict each other: an
+    /// 800x600 window popping up at every login defeats the point of
+    /// autostart. Defaults to `false`, so both upgrading users and anyone
+    /// launching manually keep 0.1.0's behaviour — the window shows on
+    /// launch — until they explicitly opt into starting minimised.
+    pub start_minimised: bool,
+
+    /// Whether the first-run onboarding card (the autostart / start-minimised
+    /// checkboxes shown in the details window) has already been shown and
+    /// dismissed. Defaults to `false`, so a brand new install shows the card
+    /// exactly once. Upgrading 0.1.0 users have no `onboarding_completed` key
+    /// in their existing `settings.json` at all, so `#[serde(default)]` also
+    /// gives them `false` here — they see the card once on their first 0.1.1
+    /// launch. That is a deliberate choice, not a gap: those users were
+    /// genuinely never asked about autostart or start-minimised, so asking
+    /// once now is correct. The alternative — inferring "first run" from
+    /// whether `settings.json` exists on disk — was rejected because it
+    /// misreports anyone whose settings file was lost, reset, or never
+    /// written yet for an unrelated reason as a brand-new user. Set to `true`
+    /// the moment the card is dismissed, whether by making a choice or by
+    /// explicitly skipping it — re-showing it after a decline would be
+    /// nagging, not onboarding.
+    pub onboarding_completed: bool,
 }
 
 impl Default for Settings {
@@ -55,6 +81,8 @@ impl Default for Settings {
             notifications_enabled: true,
             launch_at_startup: false,
             expected_country_code: None,
+            start_minimised: false,
+            onboarding_completed: false,
         }
     }
 }
@@ -196,6 +224,8 @@ mod tests {
             notifications_enabled: false,
             launch_at_startup: true,
             expected_country_code: Some("NL".to_string()),
+            start_minimised: true,
+            onboarding_completed: true,
         };
 
         save(&path, &original).unwrap();
@@ -222,6 +252,43 @@ mod tests {
         assert!(!settings.notifications_enabled);
         assert!(settings.launch_at_startup);
         assert_eq!(settings.expected_country_code, None);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn settings_json_from_0_1_0_loads_with_new_fields_defaulted_to_false() {
+        // This is the backward-compatibility guarantee the whole
+        // no-migration claim for `start_minimised` and `onboarding_completed`
+        // rests on: a real 0.1.0 settings.json, containing only the four
+        // fields that existed at that release, must still parse -- and the
+        // two fields added since must come out `false`, not fail to
+        // deserialize or panic.
+        let path = temp_path("settings-0-1-0.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "poll_interval_secs": 45,
+                "notifications_enabled": true,
+                "launch_at_startup": true,
+                "expected_country_code": "US"
+            }"#,
+        )
+        .unwrap();
+
+        let settings = load(&path);
+
+        // Pre-existing fields still round-trip correctly.
+        assert_eq!(settings.poll_interval_secs, 45);
+        assert!(settings.notifications_enabled);
+        assert!(settings.launch_at_startup);
+        assert_eq!(settings.expected_country_code, Some("US".to_string()));
+
+        // Fields that did not exist in 0.1.0 default to false: an upgrading
+        // user's window still shows at launch (no silent minimise) and they
+        // see the first-run onboarding card exactly once.
+        assert!(!settings.start_minimised);
+        assert!(!settings.onboarding_completed);
+
         let _ = std::fs::remove_file(&path);
     }
 

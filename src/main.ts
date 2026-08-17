@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { PLACEHOLDER, queryEl, setScopedMessage, text } from "./shared";
+import { PLACEHOLDER, queryEl, setScopedMessage, text, type Settings } from "./shared";
 
 // ---------------------------------------------------------------------------
 // Backend payload shapes. These mirror the Rust structs in
@@ -91,6 +91,13 @@ interface LeakReport {
   verdict: DnsLeakVerdict;
 }
 
+// `Settings` comes from `./shared` (imported above). This window only ever
+// asks about `launch_at_startup` and `start_minimised` plus
+// `onboarding_completed`, but `set_settings` replaces the *whole* stored
+// object with whatever is sent — so every save from this card must round-trip
+// every field it did not ask about. See `onboardingSettings` and
+// `saveOnboardingSettings` below.
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -104,6 +111,16 @@ let hasLoadedOnce = false;
 let refreshWatchdog: ReturnType<typeof setTimeout> | null = null;
 /** True while a DNS leak test is in flight, so a stray double-click can't fire a second call. */
 let dnsLeakRunning = false;
+
+/** The last `Settings` returned by `get_settings`, used solely by the
+ * onboarding card. Kept around so a save from the card can spread the whole
+ * object and override only the fields the card actually asks about — see
+ * the comment on `Settings` above for why that matters. `null` until the
+ * initial load resolves, in which case the card just stays hidden. */
+let onboardingSettings: Settings | null = null;
+/** True while an onboarding save/dismiss is in flight, so a stray
+ * double-click can't fire a second `set_settings` call. */
+let onboardingSaving = false;
 
 /** How many rows to pull from `get_history`. This is a details window, not
  * a paged log — 50 is enough to see the recent pattern without the panel
@@ -192,6 +209,14 @@ let dnsLeakResolversWrap: HTMLElement;
 let dnsLeakResolversBody: HTMLElement;
 let dnsLeakResolversEmptyEl: HTMLElement;
 
+let onboardingCard: HTMLElement;
+let onboardingLaunchStartupInput: HTMLInputElement;
+let onboardingLaunchStartupLabel: HTMLElement;
+let onboardingStartMinimisedInput: HTMLInputElement;
+let onboardingErrorEl: HTMLElement;
+let onboardingSaveBtn: HTMLButtonElement;
+let onboardingDismissBtn: HTMLButtonElement;
+
 function bindDom(): void {
   refreshBtn = queryEl("#refresh-btn");
   statusPill = queryEl("#status-pill");
@@ -233,6 +258,14 @@ function bindDom(): void {
   dnsLeakResolversWrap = queryEl("#dnsleak-resolvers-wrap");
   dnsLeakResolversBody = queryEl("#dnsleak-resolvers-body");
   dnsLeakResolversEmptyEl = queryEl("#dnsleak-resolvers-empty");
+
+  onboardingCard = queryEl("#onboarding-card");
+  onboardingLaunchStartupInput = queryEl("#onboarding-launch-startup");
+  onboardingLaunchStartupLabel = queryEl("#onboarding-launch-startup-label");
+  onboardingStartMinimisedInput = queryEl("#onboarding-start-minimised");
+  onboardingErrorEl = queryEl("#onboarding-error");
+  onboardingSaveBtn = queryEl("#onboarding-save-btn");
+  onboardingDismissBtn = queryEl("#onboarding-dismiss-btn");
 }
 
 // ---------------------------------------------------------------------------
@@ -643,6 +676,129 @@ async function onDnsLeakRunClick(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// First-run onboarding card (brief 6.3)
+//
+// Shown only while `onboarding_completed` is false. Both the "Save" and
+// "Not now" paths set it to `true` — declining is an answer, not a deferral,
+// so the card must never come back after either one (see the brief's
+// "Decision already made" section). Both paths go through
+// `saveOnboardingSettings`, which always spreads `onboardingSettings` (the
+// last `get_settings` response) before overriding fields, so a save from
+// this card can never silently reset a field it doesn't show — the same
+// hazard `settings.ts`'s `readSettingsForm` guards against for the settings
+// window.
+// ---------------------------------------------------------------------------
+
+/** "Windows" only on Windows; every other platform (macOS, Linux — this app
+ * ships for both, see `TILE_URL_TEMPLATE` above for the established
+ * platform-sniffing pattern) gets a platform-neutral "when you log in"
+ * phrasing rather than a Windows-specific one that would be wrong on those
+ * platforms. Startup-on-login is the same OS-level concept everywhere
+ * (`launch_at_startup` / `apply_autostart` in Rust already handle all three
+ * platforms uniformly), only the correct English differs. */
+const AUTOSTART_LABEL = navigator.userAgent.includes("Windows")
+  ? "Start ipwatch when Windows starts"
+  : "Start ipwatch when you log in";
+
+function setOnboardingError(message: string | null): void {
+  setScopedMessage(onboardingErrorEl, message);
+}
+
+function hideOnboardingCard(): void {
+  onboardingCard.hidden = true;
+}
+
+/** Renders the card from an authoritative `Settings` value and shows/hides
+ * it based on `onboarding_completed`. Never call this with unconfirmed
+ * input — mirrors `settings.ts`'s `renderSettingsForm`. */
+function renderOnboardingCard(settings: Settings): void {
+  onboardingSettings = settings;
+
+  if (settings.onboarding_completed) {
+    hideOnboardingCard();
+    return;
+  }
+
+  onboardingLaunchStartupInput.checked = settings.launch_at_startup;
+  onboardingStartMinimisedInput.checked = settings.start_minimised;
+  onboardingCard.hidden = false;
+}
+
+function setOnboardingSaving(saving: boolean): void {
+  onboardingSaving = saving;
+  onboardingSaveBtn.disabled = saving;
+  onboardingDismissBtn.disabled = saving;
+  onboardingSaveBtn.textContent = saving ? "Saving…" : "Save";
+}
+
+/**
+ * Persists `overrides` on top of the last known-good `Settings` (never on
+ * top of an empty object — `set_settings` replaces the whole stored value,
+ * so any field missing here would be silently reset to its default) and,
+ * on success, hides the card immediately without requiring a restart:
+ * `set_settings` already applies `launch_at_startup` via `apply_autostart`
+ * for the live session, and `start_minimised` is read-at-next-launch by
+ * design (`app::setup`), so there is nothing else this window needs to do
+ * once the write succeeds.
+ */
+async function saveOnboardingSettings(
+  overrides: Partial<Pick<Settings, "launch_at_startup" | "start_minimised">>,
+): Promise<void> {
+  if (onboardingSaving || !onboardingSettings) {
+    return;
+  }
+
+  const payload: Settings = {
+    ...onboardingSettings,
+    ...overrides,
+    onboarding_completed: true,
+  };
+
+  setOnboardingSaving(true);
+  setOnboardingError(null);
+
+  try {
+    const effective = await invoke<Settings>("set_settings", { newSettings: payload });
+    onboardingSettings = effective;
+    hideOnboardingCard();
+  } catch (err) {
+    setOnboardingError(`Could not save: ${String(err)}`);
+  } finally {
+    setOnboardingSaving(false);
+  }
+}
+
+function onOnboardingSaveClick(): void {
+  void saveOnboardingSettings({
+    launch_at_startup: onboardingLaunchStartupInput.checked,
+    start_minimised: onboardingStartMinimisedInput.checked,
+  });
+}
+
+/** Dismissing without choosing still sets `onboarding_completed = true` and
+ * otherwise touches nothing — per the brief, declining is an answer, and
+ * re-asking on the next launch would be nagging. */
+function onOnboardingDismissClick(): void {
+  void saveOnboardingSettings({});
+}
+
+async function loadOnboardingState(): Promise<void> {
+  onboardingLaunchStartupLabel.textContent = AUTOSTART_LABEL;
+
+  try {
+    const settings = await invoke<Settings>("get_settings");
+    renderOnboardingCard(settings);
+  } catch {
+    // If the onboarding state can't even be determined, don't show the
+    // card — popping up a settings prompt on top of a backend that just
+    // failed a call would be a worse first impression than skipping it for
+    // this one launch. The rest of the window degrades the same way (see
+    // `loadDetails`'s catch block) rather than blocking on this.
+    hideOnboardingCard();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Backend calls
 // ---------------------------------------------------------------------------
 
@@ -768,10 +924,13 @@ window.addEventListener("DOMContentLoaded", () => {
   refreshBtn.addEventListener("click", () => void onRefreshClick());
   mapToggleBtn.addEventListener("click", onMapToggleClick);
   dnsLeakRunBtn.addEventListener("click", () => void onDnsLeakRunClick());
+  onboardingSaveBtn.addEventListener("click", onOnboardingSaveClick);
+  onboardingDismissBtn.addEventListener("click", onOnboardingDismissClick);
 
   void (async () => {
     await registerListeners();
     await loadDetails();
     await loadHistory();
+    await loadOnboardingState();
   })();
 });

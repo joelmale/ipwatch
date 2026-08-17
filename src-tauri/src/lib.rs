@@ -36,7 +36,31 @@ fn init_tracing() {
 pub fn run() {
     init_tracing();
 
-    let builder = tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    // Registered first, before every other plugin below (tauri_plugin_opener,
+    // notification, autostart) and before app::tiles::register. Per the
+    // plugin's own docs (https://v2.tauri.app/plugin/single-instance/):
+    // "The Single Instance plugin must be the first one to be registered to
+    // work well. This assures that it runs before other plugins can
+    // interfere." Concretely: when a second instance launches, this plugin
+    // must detect the already-running instance and exit the second process
+    // before any other plugin — or app::setup — gets a chance to start a
+    // second poller, open a second SQLite writer, or spawn a second tray
+    // icon (PLAN.md brief 6.1). Getting this order wrong does not fail to
+    // compile.
+    //
+    // Desktop-only: gated both here with `#[cfg(desktop)]` (the alias Tauri's
+    // build script defines) and at the Cargo-dependency level in Cargo.toml,
+    // since the crate has no mobile equivalent.
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(
+            app::on_second_instance,
+        ));
+    }
+
+    let builder = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(

@@ -1,20 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
-import { queryEl, setScopedMessage } from "./shared";
+import { queryEl, setScopedMessage, type Settings } from "./shared";
 
-// ---------------------------------------------------------------------------
-// Backend payload shape. Mirrors `src-tauri/src/settings/mod.rs::Settings`
-// exactly. Field names are snake_case to match serde's default
-// (de)serialization — Tauri does NOT rename struct fields, only command
-// *arguments* get the snake_case-to-camelCase treatment (see `set_settings`
-// below).
-// ---------------------------------------------------------------------------
-
-interface Settings {
-  poll_interval_secs: number;
-  notifications_enabled: boolean;
-  launch_at_startup: boolean;
-  expected_country_code: string | null;
-}
+// `onboarding_completed` is not surfaced in this UI (that's the first-run
+// card in `main.ts`), but `set_settings` replaces the whole stored struct, so
+// omitting it here would silently reset it to `false` on every save.
+// `readSettingsForm` carries the last known value through unchanged.
 
 // ---------------------------------------------------------------------------
 // State
@@ -46,6 +36,7 @@ let settingsSuccessEl: HTMLElement;
 let settingsPollIntervalInput: HTMLInputElement;
 let settingsNotificationsInput: HTMLInputElement;
 let settingsLaunchStartupInput: HTMLInputElement;
+let settingsStartMinimisedInput: HTMLInputElement;
 let settingsCountryCodeInput: HTMLInputElement;
 let settingsSaveBtn: HTMLButtonElement;
 let settingsClampNoteEl: HTMLElement;
@@ -57,6 +48,7 @@ function bindDom(): void {
   settingsPollIntervalInput = queryEl("#settings-poll-interval");
   settingsNotificationsInput = queryEl("#settings-notifications");
   settingsLaunchStartupInput = queryEl("#settings-launch-startup");
+  settingsStartMinimisedInput = queryEl("#settings-start-minimised");
   settingsCountryCodeInput = queryEl("#settings-country-code");
   settingsSaveBtn = queryEl("#settings-save-btn");
   settingsClampNoteEl = queryEl("#settings-clamp-note");
@@ -104,6 +96,7 @@ function renderSettingsForm(settings: Settings): void {
   settingsPollIntervalInput.value = String(settings.poll_interval_secs);
   settingsNotificationsInput.checked = settings.notifications_enabled;
   settingsLaunchStartupInput.checked = settings.launch_at_startup;
+  settingsStartMinimisedInput.checked = settings.start_minimised;
   settingsCountryCodeInput.value = settings.expected_country_code ?? "";
   updateSettingsSaveButton();
 }
@@ -123,9 +116,15 @@ function readSettingsForm(): Settings {
     poll_interval_secs: pollIntervalSecs,
     notifications_enabled: settingsNotificationsInput.checked,
     launch_at_startup: settingsLaunchStartupInput.checked,
+    start_minimised: settingsStartMinimisedInput.checked,
     // Empty means "no expectation" — must be `null`, not `""`, to match the
     // backend's `Option<String>` contract.
     expected_country_code: countryCode === "" ? null : countryCode,
+    // `set_settings` takes the full `Settings` object and overwrites whatever
+    // is currently stored, and there is no UI for this field here (brief
+    // 6.3). Carry the last-known value through unchanged so a save from this
+    // form can never silently reset it to `false`.
+    onboarding_completed: currentSettings?.onboarding_completed ?? false,
   };
 }
 
@@ -134,7 +133,9 @@ function settingsEqual(a: Settings, b: Settings): boolean {
     a.poll_interval_secs === b.poll_interval_secs &&
     a.notifications_enabled === b.notifications_enabled &&
     a.launch_at_startup === b.launch_at_startup &&
-    a.expected_country_code === b.expected_country_code
+    a.start_minimised === b.start_minimised &&
+    a.expected_country_code === b.expected_country_code &&
+    a.onboarding_completed === b.onboarding_completed
   );
 }
 
@@ -211,6 +212,7 @@ window.addEventListener("DOMContentLoaded", () => {
     settingsPollIntervalInput,
     settingsNotificationsInput,
     settingsLaunchStartupInput,
+    settingsStartMinimisedInput,
     settingsCountryCodeInput,
   ]) {
     input.addEventListener("input", onSettingsFieldChange);

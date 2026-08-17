@@ -23,7 +23,10 @@ const ICON_UNKNOWN: &[u8] = include_bytes!("../../icons/tray-unknown.png");
 
 /// The main window's label, per `tauri.conf.json` (unlabelled entries default
 /// to `"main"`).
-const MAIN_WINDOW_LABEL: &str = "main";
+/// `pub(crate)` so `app::setup` can name the same window it shows at startup
+/// (brief 6.2) without restating the literal. The label is a contract with
+/// `tauri.conf.json`'s window entry; one definition, not three.
+pub(crate) const MAIN_WINDOW_LABEL: &str = "main";
 
 /// The settings window's label. Shared contract with the frontend agent
 /// building `settings.html`/`src/settings.ts`: this label, together with the
@@ -347,7 +350,14 @@ pub fn init(
 
 /// Shows, unminimizes, and focuses the main window. It may be hidden (see
 /// `wire_close_to_tray`), so `show()` before `set_focus()`.
-fn show_details_window(app: &AppHandle) {
+///
+/// `pub(crate)` because `app::on_second_instance` needs exactly this behaviour
+/// when a duplicate launch is folded back into the running process (brief
+/// 6.1). Kept as one function rather than two similar ones so the
+/// unminimize → show → focus order stays defined in a single place: a hidden,
+/// minimized window that is shown before being unminimized can paint briefly
+/// at its restored size first.
+pub(crate) fn show_details_window(app: &AppHandle) {
     let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
         tracing::error!("main window not found; cannot show Details");
         return;
