@@ -1,27 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
-import { queryEl, setScopedMessage } from "./shared";
+import { queryEl, setScopedMessage, type Settings } from "./shared";
 
-// ---------------------------------------------------------------------------
-// Backend payload shape. Mirrors `src-tauri/src/settings/mod.rs::Settings`
-// exactly. Field names are snake_case to match serde's default
-// (de)serialization — Tauri does NOT rename struct fields, only command
-// *arguments* get the snake_case-to-camelCase treatment (see `set_settings`
-// below).
-// ---------------------------------------------------------------------------
-
-interface Settings {
-  poll_interval_secs: number;
-  notifications_enabled: boolean;
-  launch_at_startup: boolean;
-  expected_country_code: string | null;
-  start_minimised: boolean;
-  // Not surfaced in this UI (that's brief 6.3's onboarding card), but
-  // `set_settings` takes a whole `Settings` object and replaces the stored
-  // value with whatever is sent — omitting this field here would silently
-  // reset it to `false` on every save. `readSettingsForm` carries the last
-  // known value through unchanged; see there.
-  onboarding_completed: boolean;
-}
+// `onboarding_completed` is not surfaced in this UI (that's the first-run
+// card in `main.ts`), but `set_settings` replaces the whole stored struct, so
+// omitting it here would silently reset it to `false` on every save.
+// `readSettingsForm` carries the last known value through unchanged.
 
 // ---------------------------------------------------------------------------
 // State

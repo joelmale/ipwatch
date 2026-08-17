@@ -140,6 +140,121 @@ button#refresh-btn:disabled {
 }
 
 /* ---------------------------------------------------------------------- */
+/* First-run onboarding card (brief 6.3)                                  */
+/*                                                                         */
+/* Shown only while `onboarding_completed` is false, so this is the very  */
+/* first thing a new install sees — styled as a card like `.headline`     */
+/* rather than a `.panel`, so it reads as a distinct one-time prompt      */
+/* instead of just another detail panel among the rest.                   */
+/* ---------------------------------------------------------------------- */
+
+.onboarding-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-accent);
+  border-radius: 14px;
+  padding: 20px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.onboarding-card__title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.onboarding-card__body {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--color-text-muted);
+}
+
+.onboarding-card__options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.onboarding-card__options label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.onboarding-card__options input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
+.onboarding-error {
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  background: var(--color-offline-bg);
+  color: var(--color-offline);
+  border: 1px solid color-mix(in srgb, var(--color-offline) 35%, transparent);
+}
+
+.onboarding-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+button#onboarding-save-btn {
+  border-radius: 8px;
+  border: 1px solid var(--color-accent);
+  padding: 0.5em 1.2em;
+  font-size: 0.9rem;
+  font-weight: 600;
+  font-family: inherit;
+  color: #fff;
+  background-color: var(--color-accent);
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+button#onboarding-save-btn:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+button#onboarding-save-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+button#onboarding-dismiss-btn {
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  padding: 0.5em 1.2em;
+  font-size: 0.9rem;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--color-text);
+  background-color: var(--color-surface);
+  cursor: pointer;
+  transition: border-color 0.15s, opacity 0.15s;
+}
+
+button#onboarding-dismiss-btn:hover:not(:disabled) {
+  border-color: var(--color-accent);
+}
+
+button#onboarding-dismiss-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* ---------------------------------------------------------------------- */
 /* Headline — the answer to "is my VPN working"                           */
 /* ---------------------------------------------------------------------- */
 

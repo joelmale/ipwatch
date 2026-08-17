@@ -157,8 +157,10 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 /// second tray icon (PLAN.md brief 6.1).
 ///
 /// `argv`/`cwd` describe the second instance's command line and working
-/// directory. Both are ignored today — a future `--silent` flag (PLAN.md
-/// brief 6.2) would be read out of `argv` here.
+/// directory. Both are ignored today. They are the hook for any future
+/// command-line handling — a `--silent` *flag*, say, distinct from the
+/// persisted `start_minimised` setting, which is read from `settings.json`
+/// at startup and never from `argv`.
 ///
 /// Deliberately does only window plumbing: never starts a poller, opens a DB
 /// handle, or touches settings. Those are already running in this — the
@@ -624,16 +626,22 @@ mod tests {
     use super::*;
     use crate::poller::classify;
 
-    /// Guards the exact interaction brief 6.1 calls out: a second `Initial`
-    /// classification for an unchanged IP must stay suppressed once the
-    /// observation round-trips through a real `Db` via `last_snapshot`, not
-    /// just when a `Snapshot` is constructed by hand (see
+    /// Guards the Phase 3 poller-seeding behaviour that brief 6.1 depends on:
+    /// a second `Initial` classification for an unchanged IP must stay
+    /// suppressed once the observation round-trips through a real `Db` via
+    /// `last_snapshot`, not just when a `Snapshot` is constructed by hand (see
     /// `poller::tests::a_seeded_baseline_makes_an_unchanged_restart_silent`
-    /// for that narrower, Tauri-free version). Without the Phase 3
-    /// poller-seeding fix this reconstructs to a fresh session with no
-    /// baseline, `classify` returns `Initial` again, and every restart — or
-    /// every second process a missing single-instance guard would otherwise
-    /// let through — adds a duplicate `ip_events` row.
+    /// for that narrower, Tauri-free version). Without seeding, this
+    /// reconstructs to a fresh session with no baseline, `classify` returns
+    /// `Initial` again, and every restart adds a duplicate `ip_events` row.
+    ///
+    /// Scope, stated plainly: this exercises `last_snapshot` + `classify`,
+    /// both of which predate brief 6.1, so it passes on the pre-6.1 tree too.
+    /// It is a guard against regressing the seeding fix that makes duplicate
+    /// launches harmless — it is **not** coverage of the single-instance
+    /// mechanism itself. `on_second_instance` and the plugin's registration
+    /// order are exercised only by launching an installed build twice, which
+    /// no unit test here can do.
     #[test]
     fn a_second_initial_for_an_unchanged_ip_is_suppressed_after_reload() {
         let db = Db::open(":memory:").expect("in-memory db opens");
