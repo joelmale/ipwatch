@@ -136,6 +136,31 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Invoked by `tauri-plugin-single-instance` (registered first in the
+/// builder chain in `lib.rs` — see that registration's doc comment for why
+/// order matters) when a second instance is launched while this one is
+/// already running. Brings the existing main window to the front instead of
+/// letting a second process start, which would double the poll rate against
+/// ip-api.com, open a second SQLite writer on the same file, and spawn a
+/// second tray icon (PLAN.md brief 6.1).
+///
+/// `argv`/`cwd` describe the second instance's command line and working
+/// directory. Both are ignored today — a future `--silent` flag (PLAN.md
+/// brief 6.2) would be read out of `argv` here.
+///
+/// Deliberately does only window plumbing: never starts a poller, opens a DB
+/// handle, or touches settings. Those are already running in this — the
+/// first — process, and the second process exits right after this callback
+/// returns.
+#[cfg(desktop)]
+pub fn on_second_instance(app: &AppHandle, _argv: Vec<String>, _cwd: String) {
+    // Delegates rather than reimplementing: the tray's Details item wants the
+    // same "bring the existing window to the front" behaviour, and duplicating
+    // it would mean two copies of the window label and two orderings of
+    // unminimize/show/focus that could silently diverge.
+    tray::show_details_window(app);
+}
+
 /// Rebuilds a `Snapshot` from the newest persisted `ip_events` row, for
 /// seeding change detection across a restart.
 ///
@@ -550,4 +575,54 @@ pub async fn set_settings(
     }
 
     Ok(effective)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::poller::classify;
+
+    /// Guards the exact interaction brief 6.1 calls out: a second `Initial`
+    /// classification for an unchanged IP must stay suppressed once the
+    /// observation round-trips through a real `Db` via `last_snapshot`, not
+    /// just when a `Snapshot` is constructed by hand (see
+    /// `poller::tests::a_seeded_baseline_makes_an_unchanged_restart_silent`
+    /// for that narrower, Tauri-free version). Without the Phase 3
+    /// poller-seeding fix this reconstructs to a fresh session with no
+    /// baseline, `classify` returns `Initial` again, and every restart — or
+    /// every second process a missing single-instance guard would otherwise
+    /// let through — adds a duplicate `ip_events` row.
+    #[test]
+    fn a_second_initial_for_an_unchanged_ip_is_suppressed_after_reload() {
+        let db = Db::open(":memory:").expect("in-memory db opens");
+        db.insert_event(&IpEvent {
+            id: None,
+            ts: 1_700_000_000,
+            external_ip: "203.0.113.7".to_string(),
+            country: Some("United States".to_string()),
+            country_code: Some("US".to_string()),
+            isp: Some("Example ISP".to_string()),
+            change_reason: ChangeReason::Initial,
+        })
+        .unwrap();
+
+        let shared: SharedDb = Arc::new(StdMutex::new(Some(db)));
+        let baseline =
+            last_snapshot(&shared).expect("a baseline is rebuilt from the stored row");
+
+        // What the poller would observe on the very next tick if nothing
+        // about the connection has actually changed: same ip/country/isp,
+        // only `observed_at` moves forward.
+        let fresh = Snapshot {
+            observed_at: 1_700_000_999,
+            ..baseline.clone()
+        };
+
+        assert_eq!(
+            classify(Some(&baseline), &fresh),
+            None,
+            "an unchanged ip/country/isp must not classify as a change, or a second \
+             process (or restart) would double-write ip_events"
+        );
+    }
 }
