@@ -23,7 +23,10 @@ const ICON_UNKNOWN: &[u8] = include_bytes!("../../icons/tray-unknown.png");
 
 /// The main window's label, per `tauri.conf.json` (unlabelled entries default
 /// to `"main"`).
-const MAIN_WINDOW_LABEL: &str = "main";
+/// `pub(crate)` so `app::setup` can name the same window it shows at startup
+/// (brief 6.2) without restating the literal. The label is a contract with
+/// `tauri.conf.json`'s window entry; one definition, not three.
+pub(crate) const MAIN_WINDOW_LABEL: &str = "main";
 
 /// The settings window's label. Shared contract with the frontend agent
 /// building `settings.html`/`src/settings.ts`: this label, together with the

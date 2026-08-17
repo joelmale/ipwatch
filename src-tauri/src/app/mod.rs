@@ -79,6 +79,7 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let initial_interval = Duration::from_secs(settings.poll_interval_secs);
     let expected_country_code = settings.expected_country_code.clone();
     let launch_at_startup = settings.launch_at_startup;
+    let start_minimised = settings.start_minimised;
     let shared_settings: SharedSettings = Arc::new(StdMutex::new(settings));
     app.manage(shared_settings.clone());
 
@@ -88,6 +89,17 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     // reinstall of the autostart entry, or a settings.json restored from
     // backup).
     apply_autostart(&handle, launch_at_startup);
+
+    // `tauri.conf.json`'s main window is configured `"visible": false` so it
+    // never paints on screen to begin with; this is the one deliberate place
+    // that flips it to visible, unless the user opted into staying
+    // minimised (PLAN.md brief 6.2). Hidden-by-config-then-shown is required
+    // here, not show-then-hide: the latter paints the window for a frame
+    // before hiding it again, which is exactly the startup flash this brief
+    // exists to eliminate. Does not gate anything else below — the poller,
+    // tray, event bridge, and tile cache prune all start unconditionally
+    // regardless of whether this ever shows the window.
+    show_main_window_unless_minimised(&handle, start_minimised);
 
     // Age/size-bounded, and run on its own background task so a slow or
     // failing prune can never delay startup or block a concurrent tile
@@ -314,6 +326,36 @@ fn apply_autostart(app: &AppHandle, enabled: bool) {
     };
     if let Err(err) = result {
         tracing::error!(%err, enabled, "failed to apply launch-at-startup setting");
+    }
+}
+
+/// Shows the main window unless `start_minimised` is `true` (PLAN.md brief
+/// 6.2). See the call site in `setup` for why the window must be configured
+/// hidden (`tauri.conf.json`) and shown deliberately here, rather than shown
+/// then hidden.
+///
+/// Failures are logged, not propagated — the same "never fail startup over a
+/// best-effort side effect" policy as `apply_autostart`. A window that fails
+/// to show still exists and can be reached later via the tray's Details item
+/// (`tray::show_details_window`), which does its own `show()`/`set_focus()`
+/// and does not depend on this call having succeeded.
+fn show_main_window_unless_minimised(handle: &AppHandle, start_minimised: bool) {
+    if start_minimised {
+        return;
+    }
+
+    match handle.get_webview_window(tray::MAIN_WINDOW_LABEL) {
+        Some(window) => {
+            if let Err(err) = window.show() {
+                tracing::error!(%err, "failed to show main window at startup");
+            } else if let Err(err) = window.set_focus() {
+                // Non-fatal: the window is visible either way, just possibly
+                // not focused. Mirrors `tray::show_details_window`'s
+                // treatment of a failed `set_focus`.
+                tracing::warn!(%err, "failed to focus main window at startup");
+            }
+        }
+        None => tracing::error!("main window not found at startup; cannot show it"),
     }
 }
 
